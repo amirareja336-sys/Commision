@@ -84,30 +84,68 @@ const thead = document.querySelector('#dataTable thead tr');
 const tbody = document.querySelector('#dataTable tbody');
 
 async function loadTableList() {
-  const [tablesRes, dateRes] = await Promise.all([
+  const [tablesRes, dateRes, uiRes] = await Promise.all([
     fetch(`${API}/tables/list`),
     fetch(`${API}/tables/date-columns`),
+    fetch(`${API}/runtime/ui/evaluation`).catch(() => null),
   ]);
   const data = await tablesRes.json();
   const dateData = await dateRes.json();
   dateColumnsByTable = dateData.date_columns || {};
   tableSelect.innerHTML = data.tables.map(t => `<option value="${t}">${t}</option>`).join('');
-  const preferred = data.tables.includes('matched_records')
-    ? 'matched_records'
-    : (data.tables.includes('commission_per_physicians') ? 'commission_per_physicians' : data.tables[0]);
+
+  let saved = {};
+  try {
+    if (uiRes && uiRes.ok) saved = (await uiRes.json()).state || {};
+  } catch (e) { saved = {}; }
+
+  const preferred = (saved.table && data.tables.includes(saved.table))
+    ? saved.table
+    : (data.tables.includes('matched_records')
+      ? 'matched_records'
+      : (data.tables.includes('commission_per_physicians') ? 'commission_per_physicians' : data.tables[0]));
   if (preferred) tableSelect.value = preferred;
+  if (saved.startDate) document.getElementById('startDate').value = saved.startDate;
+  if (saved.endDate) document.getElementById('endDate').value = saved.endDate;
+  window.__savedEvalFilters = saved.filters || {};
+  window.__savedEvalOffset = saved.offset || 0;
   await loadTable();
 }
 tableSelect.addEventListener('change', loadTable);
 
 async function loadTable() {
   currentTable = tableSelect.value;
-  currentOffset = 0;
+  currentOffset = window.__savedEvalOffset || 0;
+  window.__savedEvalOffset = 0;
   const colRes = await fetch(`${API}/tables/${currentTable}/columns`);
   const colData = await colRes.json();
   currentColumns = colData.columns;
   await buildFilterCombos(currentColumns);
+  const savedFilters = window.__savedEvalFilters || {};
+  window.__savedEvalFilters = {};
+  for (const [col, val] of Object.entries(savedFilters)) {
+    if (combos[col] && val) {
+      combos[col].selected = val;
+      combos[col].input.value = val;
+    }
+  }
   await fetchAndRender();
+  saveEvaluationUi();
+}
+
+function saveEvaluationUi() {
+  const state = {
+    table: currentTable,
+    filters: collectFilters(),
+    startDate: document.getElementById('startDate').value,
+    endDate: document.getElementById('endDate').value,
+    offset: currentOffset,
+  };
+  fetch(`${API}/runtime/ui`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page: 'evaluation', state }),
+  }).catch(() => {});
 }
 
 // ── Combined dropdown + search filter widget ────────────────────
@@ -224,6 +262,7 @@ async function fetchAndRender() {
   currentTotal = data.total ?? data.rows.length;
   renderTable(currentColumns, data.rows);
   updateChunkControls();
+  saveEvaluationUi();
 }
 
 function renderTable(columns, rows) {
@@ -305,6 +344,10 @@ document.getElementById('clearBtn').addEventListener('click', () => {
   document.getElementById('endDate').value = '';
   currentOffset = 0;
   fetchAndRender();
+});
+
+['startDate', 'endDate'].forEach(id => {
+  document.getElementById(id).addEventListener('change', saveEvaluationUi);
 });
 
 document.getElementById('exportTableBtn').addEventListener('click', async () => {

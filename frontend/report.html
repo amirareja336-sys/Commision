@@ -133,6 +133,7 @@ function collectQuery() {
 }
 
 async function loadTable() {
+  saveReportUi();
   const res = await fetch(`${API}/preview?${collectQuery().toString()}`);
   const data = await res.json();
   currentRows = data.rows || [];
@@ -144,6 +145,19 @@ async function loadTable() {
   }).join("");
   document.getElementById("rowCount").textContent =
     `${currentRows.length} condensed row(s) — ready to send`;
+}
+
+function saveReportUi() {
+  const state = {
+    physician: (physicianSelected || physicianInput.value || "").trim(),
+    startDate: document.getElementById("startDate").value,
+    endDate: document.getElementById("endDate").value,
+  };
+  fetch("/api/runtime/ui", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ page: "report", state }),
+  }).catch(() => {});
 }
 
 document.getElementById("applyBtn").addEventListener("click", loadTable);
@@ -176,6 +190,10 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
   }
 });
 
+["startDate", "endDate"].forEach(id => {
+  document.getElementById(id).addEventListener("change", saveReportUi);
+});
+
 (async function init() {
   const res = await fetch("/api/auth/me");
   const data = await res.json();
@@ -187,6 +205,18 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     window.location.href = "/login";
   });
+  try {
+    const uiRes = await fetch("/api/runtime/ui/report");
+    if (uiRes.ok) {
+      const saved = (await uiRes.json()).state || {};
+      if (saved.physician) {
+        physicianSelected = saved.physician;
+        physicianInput.value = saved.physician;
+      }
+      if (saved.startDate) document.getElementById("startDate").value = saved.startDate;
+      if (saved.endDate) document.getElementById("endDate").value = saved.endDate;
+    }
+  } catch (e) { /* fresh */ }
   await loadPhysicians();
   await loadTable();
 })();

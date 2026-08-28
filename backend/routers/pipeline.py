@@ -25,12 +25,12 @@ import secondary_name_matcher  # noqa: E402
 import category_merger  # noqa: E402
 import matched_review_adapter as review  # noqa: E402
 import auth  # noqa: E402
+import runtime_state as rt  # noqa: E402
 
 router = APIRouter()
 
-# batch_id -> list[str] log lines. Progress/status is tracked purely
-# in-memory here (streamed to the browser over the websocket below) —
-# there is no persisted pipeline_runs table.
+# batch_id -> list[str] log lines. Also mirrored into temp/runtime_state.json
+# so progress survives page navigation (and can be restored after a refresh).
 RUN_LOGS: Dict[str, List[str]] = {}
 RUN_LISTENERS: Dict[str, List[asyncio.Queue]] = {}
 
@@ -39,6 +39,7 @@ def _emit(batch_id: str, message: str):
     RUN_LOGS.setdefault(batch_id, []).append(message)
     for q in RUN_LISTENERS.get(batch_id, []):
         q.put_nowait(message)
+    rt.append_line("pipeline", batch_id, message)
 
 
 @router.post("/upload/sot")
@@ -101,16 +102,34 @@ def _run_pipeline_sync(batch_id: str):
 
 @router.post("/run")
 async def run_pipeline(user=Depends(auth.require_admin)):
+    current = rt.get_job("pipeline")
+    if current.get("status") == "running" and current.get("batch_id"):
+        return {"batch_id": current["batch_id"], "resumed": True}
     batch_id = dbm.new_batch_id()
     RUN_LOGS[batch_id] = []
     RUN_LISTENERS[batch_id] = []
+    rt.start_job("pipeline", batch_id)
     asyncio.get_event_loop().run_in_executor(None, _run_pipeline_sync, batch_id)
-    return {"batch_id": batch_id}
+    return {"batch_id": batch_id, "resumed": False}
+
+
+@router.get("/status")
+def pipeline_status(user=Depends(auth.require_admin)):
+    job = rt.get_job("pipeline")
+    bid = job.get("batch_id")
+    if bid and bid in RUN_LOGS:
+        job = {**job, "lines": list(RUN_LOGS[bid])}
+    return job
 
 
 @router.get("/log/{batch_id}")
 def get_log(batch_id: str, user=Depends(auth.require_admin)):
-    return {"lines": RUN_LOGS.get(batch_id, [])}
+    if batch_id in RUN_LOGS:
+        return {"lines": RUN_LOGS[batch_id]}
+    job = rt.get_job("pipeline")
+    if job.get("batch_id") == batch_id:
+        return {"lines": job.get("lines") or []}
+    return {"lines": []}
 
 
 @router.websocket("/ws/{batch_id}")

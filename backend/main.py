@@ -17,7 +17,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 import db_manager as dbm  # noqa: E402
 import auth  # noqa: E402
 
-from routers import pipeline, tables, export, scraper, auth_router, admin, reports  # noqa: E402
+from routers import pipeline, tables, export, scraper, auth_router, admin, reports, runtime  # noqa: E402
 
 app = FastAPI(title="Reconciliation Console")
 
@@ -35,6 +35,7 @@ app.include_router(scraper.router, prefix="/api/scraper", tags=["scraper"])
 app.include_router(tables.router, prefix="/api/tables", tags=["tables"])
 app.include_router(export.router, prefix="/api/export", tags=["export"])
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
+app.include_router(runtime.router, prefix="/api/runtime", tags=["runtime"])
 
 
 @app.on_event("startup")
@@ -44,6 +45,8 @@ def on_startup():
         dbm.seed_dictionary(APP_ROOT / "dictionary.json")
     else:
         dbm._run_migrations()
+    import runtime_state as rt  # noqa: E402
+    rt.recover_on_startup()
 
 
 FRONTEND_DIR = APP_ROOT / "frontend"

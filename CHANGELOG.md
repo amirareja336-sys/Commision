@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.15 — Runtime state across page switches
+
+**Added**
+- **Volatile `temp/runtime_state.json`** keeps Abronal scrape and reconciliation progress/logs while you navigate away from Intake, plus Intake/Evaluation/Report UI filters. Returning to a page restores progress and reconnects live log streams if a job is still running. Starting a job while one is already running reattaches to the existing batch instead of starting a second.
+
 ## v0.14 — User role: Report only
 
 **Changed**

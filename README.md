@@ -48,22 +48,26 @@ app/
     routers/
       auth_router.py       login / logout / current-user endpoints
       admin.py               user management, per-user table access,
-                              commission rates, service categories
+                              commission rates / categories / calculator
                               (all endpoints require role='admin')
-      scraper.py          trigger an Abronal fetch, websocket log/progress
-      pipeline.py          file upload, run pipeline, websocket log/progress
-      tables.py             browse/filter any table the caller has access to
-      export.py               export one table (or every table the caller
-                               has access to) to .xlsx
+      pipeline.py            file upload, run pipeline, websocket log/progress
+      scraper.py             Abronal fetch, websocket log/progress
+      tables.py              browse/filter any table the caller has access to
+      export.py              export one table (or every accessible table) to .xlsx
+      reports.py             user Report preview / send; admin report views
+      runtime.py             page/job state via temp/runtime_state.json
+    runtime_state.py         volatile JSON store for async jobs + UI filters
   frontend/
     login.html            log-in page
     index.html           Intake & Run page (fetch, upload, run, progress, log)
     evaluation.html       Evaluation page (table browser, filters, export)
-    admin.html             Admin hub (links to the three tools below)
+    report.html            user Report page (condensed matched records)
+    admin.html             Admin hub
     admin_users.html         create/edit/delete users, set roles, manage
                               each user's table access
     admin_commissions.html   set each physician's commission rate
     admin_categories.html    edit each service's category
+    admin_reports.html       view accountant report submissions
     style.css
   dictionary.json         service -> category rules (seeds service_prices)
   examples/                real Abronal/SoT export templates (headers only)
@@ -78,6 +82,7 @@ app/
                              (see "Running with Docker" below)
   exports/                 generated .xlsx exports land here
   data/uploads/{sot,abronal}/   uploaded / scraped source files land here
+  temp/                    volatile caches (matched_review.json, runtime_state.json)
 ```
 
 ## Setup
@@ -265,6 +270,14 @@ amounts summed. Filter by physician and date range, then **Send Report** to
 insert the current view into the `reports` table. Admins open those
 snapshots from Admin → View Reports, with the same physician and date-range
 filters.
+
+## Runtime state across pages
+
+Long-running Intake jobs (Abronal fetch, reconciliation) keep going if you
+switch to Evaluation or Admin. Progress, logs, and form filters are stored in
+`temp/runtime_state.json` and restored when you return; an in-progress job
+reattaches its live log stream. Evaluation and Report filter choices are
+saved the same way.
 
 ## Upgrading an existing database
 
