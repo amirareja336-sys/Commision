@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Intake</title>
+<link rel="stylesheet" href="/static/style.css?v=7">
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" id="adminTabLink" style="display:none;">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <div class="card" id="scrapeCard">
+    <h2>01 · Fetch from Abronal (optional, admin only)</h2>
+    <p class="meta-line">Pulls physician performance exports directly from Abronal for a date range and drops them into the Abronal upload slot below — no manual download needed. Requires credentials in <code>.env</code> (see README).</p>
+    <div class="filters-row">
+      <div class="field">
+        <label>From Date</label>
+        <input type="date" id="scrapeFrom">
+      </div>
+      <div class="field">
+        <label>To Date</label>
+        <input type="date" id="scrapeTo">
+      </div>
+      <div class="field">
+        <label>Physicians (optional, comma-separated)</label>
+        <input type="text" id="scrapePhysicians" placeholder="leave blank for all" style="width:260px;">
+      </div>
+      <div class="field">
+        <button id="scrapeBtn">Fetch from Abronal</button>
+      </div>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-bar"><div class="progress-fill" id="scrapeFill"></div></div>
+      <div class="progress-label" id="scrapeLabel">Idle — no fetch in progress.</div>
+    </div>
+    <div class="status-banner" id="scrapeBanner"></div>
+    <div class="log-window" id="scrapeLog" style="height:150px; margin-top:12px;">Waiting for a fetch…</div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h2>02 · Source of Truth Upload</h2>
+      <p class="meta-line">Drop the SoT .xlsx export(s) here. These are mirrored into <code>sot_mirror</code> before reconciliation.</p>
+      <div class="dropzone" id="sotZone">Drop SoT .xlsx files here, or click to browse</div>
+      <input type="file" id="sotInput" accept=".xlsx" multiple style="display:none">
+      <div class="filelist" id="sotList"></div>
+    </div>
+
+    <div class="card">
+      <h2>03 · Abronal Export Upload</h2>
+      <p class="meta-line">Physician name is read from each file's <em>name</em> </p>
+      <div class="dropzone" id="abrZone">Drop Abronal .xlsx files here, or click to browse</div>
+      <input type="file" id="abrInput" accept=".xlsx" multiple style="display:none">
+      <div class="filelist" id="abrList"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>04 · Run Reconciliation Pipeline</h2>
+    <p class="meta-line">Runs, in order: <b>primary_reconciliation</b> → <b>secondary_name_matcher</b> → <b>category_merger</b>.</p>
+    <div class="actions">
+      <button id="runBtn">Run Full Reconciliation</button>
+      <button id="refreshUploadsBtn" class="secondary">Refresh Uploaded File Lists</button>
+    </div>
+
+    <div class="progress-wrap">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-label" id="progressLabel">Idle — no run in progress.</div>
+    </div>
+
+    <div class="status-banner" id="statusBanner"></div>
+  </div>
+
+  <div class="card">
+    <h2>05 · System Log</h2>
+    <div class="log-window" id="logWindow">Waiting for a run…</div>
+  </div>
+</main>
+
+<script>
+const API = "/api";
+
+function wireDropzone(zoneId, inputId, listId, endpoint) {
+  const zone = document.getElementById(zoneId);
+  const input = document.getElementById(inputId);
+  const list = document.getElementById(listId);
+
+  zone.addEventListener('click', () => input.click());
+  ['dragenter','dragover'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.remove('drag'); }));
+  zone.addEventListener('drop', e => upload(e.dataTransfer.files));
+  input.addEventListener('change', e => upload(e.target.files));
+
+  async function upload(files) {
+    if (!files || !files.length) return;
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    zone.textContent = 'Uploading…';
+    const res = await fetch(`${API}/pipeline/upload/${endpoint}`, { method: 'POST', body: fd });
+    const data = await res.json();
+    zone.textContent = `Drop more ${endpoint === 'sot' ? 'SoT' : 'Abronal'} .xlsx files here, or click to browse`;
+    refreshUploads();
+  }
+}
+wireDropzone('sotZone', 'sotInput', 'sotList', 'sot');
+wireDropzone('abrZone', 'abrInput', 'abrList', 'abronal');
+
+async function checkScraperConfig() {
+  const scrapeBtn = document.getElementById('scrapeBtn');
+  const scrapeLabel = document.getElementById('scrapeLabel');
+  try {
+    const res = await fetch(`${API}/scraper/config-check`);
+    const data = await res.json();
+    if (!data.configured) {
+      scrapeLabel.textContent = 'Not configured — add BASE_URL / USERNAME / PASSWORD / ROLE to .env (see README).';
+    }
+  } catch (e) {
+    scrapeLabel.textContent = 'Could not reach scraper service.';
+  }
+}
+checkScraperConfig();
+
+document.getElementById('scrapeBtn').addEventListener('click', async () => {
+  const scrapeBtn = document.getElementById('scrapeBtn');
+  const scrapeLog = document.getElementById('scrapeLog');
+  const scrapeFill = document.getElementById('scrapeFill');
+  const scrapeLabel = document.getElementById('scrapeLabel');
+  const scrapeBanner = document.getElementById('scrapeBanner');
+
+  const fromDate = document.getElementById('scrapeFrom').value;
+  const toDate = document.getElementById('scrapeTo').value;
+  const physicansRaw = document.getElementById('scrapePhysicians').value.trim();
+  if (!fromDate || !toDate) {
+    alert('Pick a From and To date first.');
+    return;
+  }
+  const physicians = physicansRaw ? physicansRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
+
+  scrapeBtn.disabled = true;
+  scrapeLog.textContent = '';
+  scrapeBanner.className = 'status-banner';
+  scrapeFill.style.width = '5%';
+  scrapeLabel.textContent = 'Starting fetch…';
+
+  const res = await fetch(`${API}/scraper/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from_date: fromDate, to_date: toDate, physicians }),
+  });
+  const { batch_id } = await res.json();
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/api/scraper/ws/${batch_id}`);
+
+  ws.onmessage = (evt) => {
+    const line = evt.data;
+    if (line.startsWith('SCRAPE_DONE::')) {
+      const success = line.endsWith('success');
+      scrapeFill.style.width = success ? '100%' : scrapeFill.style.width;
+      scrapeLabel.textContent = success ? 'Fetch complete.' : 'Fetch failed — see log.';
+      scrapeBanner.textContent = success
+        ? `Abronal export fetched successfully. Files are now in the Abronal upload list below.`
+        : `Fetch failed. Check the log window above for details.`;
+      scrapeBanner.classList.add('show', success ? 'success' : 'fail');
+      scrapeBtn.disabled = false;
+      ws.close();
+      refreshUploads();
+      return;
+    }
+    scrapeLog.textContent += line + '\n';
+    scrapeLog.scrollTop = scrapeLog.scrollHeight;
+    scrapeLabel.textContent = line;
+    if (line.startsWith('Launching')) scrapeFill.style.width = '10%';
+    if (line.startsWith('Logging in')) scrapeFill.style.width = '20%';
+    if (line.startsWith('Opening')) scrapeFill.style.width = '30%';
+    if (line.startsWith('Will export')) scrapeFill.style.width = '40%';
+    const m = line.match(/^\[(\d+)\/(\d+)\]/);
+    if (m) scrapeFill.style.width = (40 + (Number(m[1]) / Number(m[2])) * 55) + '%';
+  };
+  ws.onerror = () => { scrapeLabel.textContent = 'Connection lost.'; scrapeBtn.disabled = false; };
+});
+
+async function refreshUploads() {
+  const res = await fetch(`${API}/pipeline/uploads`);
+  const data = await res.json();
+  document.getElementById('sotList').innerHTML = data.sot.map(n => `<div>${n}</div>`).join('') || '<div>(none uploaded yet)</div>';
+  document.getElementById('abrList').innerHTML = data.abronal.map(n => `<div>${n}</div>`).join('') || '<div>(none uploaded yet)</div>';
+}
+document.getElementById('refreshUploadsBtn').addEventListener('click', refreshUploads);
+refreshUploads();
+
+const STEP_PROGRESS = {
+  'primary_reconciliation': 15,
+  'secondary_name_matcher': 55,
+  'category_merger': 80,
+};
+
+document.getElementById('runBtn').addEventListener('click', async () => {
+  const runBtn = document.getElementById('runBtn');
+  const logWindow = document.getElementById('logWindow');
+  const fill = document.getElementById('progressFill');
+  const label = document.getElementById('progressLabel');
+  const banner = document.getElementById('statusBanner');
+
+  runBtn.disabled = true;
+  logWindow.textContent = '';
+  banner.className = 'status-banner';
+  fill.style.width = '2%';
+  label.textContent = 'Starting run…';
+
+  const res = await fetch(`${API}/pipeline/run`, { method: 'POST' });
+  const { batch_id } = await res.json();
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/api/pipeline/ws/${batch_id}`);
+
+  ws.onmessage = (evt) => {
+    const line = evt.data;
+    if (line.startsWith('PIPELINE_DONE::')) {
+      const success = line.endsWith('success');
+      fill.style.width = success ? '100%' : fill.style.width;
+      label.textContent = success ? 'Complete.' : 'Failed — see log.';
+      banner.textContent = success
+        ? `Reconciliation complete. Batch ${batch_id}. Review results on the Evaluation page.`
+        : `Reconciliation failed. Check the log window above for details.`;
+      banner.classList.add('show', success ? 'success' : 'fail');
+      runBtn.disabled = false;
+      ws.close();
+      return;
+    }
+    logWindow.textContent += line + '\n';
+    logWindow.scrollTop = logWindow.scrollHeight;
+
+    for (const [step, pct] of Object.entries(STEP_PROGRESS)) {
+      if (line.includes(step) || line.toLowerCase().includes(step.replace(/_/g, ' '))) {
+        fill.style.width = pct + '%';
+        label.textContent = line;
+      }
+    }
+    if (line.startsWith('STEP')) label.textContent = line;
+  };
+  ws.onerror = () => { label.textContent = 'Connection lost.'; runBtn.disabled = false; };
+});
+
+// ── Auth: populate user chip, show Admin tab, wire logout ───────
+(async function initUserChip() {
+  const res = await fetch('/api/auth/me');
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = '/login'; return; }
+  document.querySelectorAll('nav.tabs a').forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '/');
+  });
+  const adminLink = document.getElementById('adminTabLink');
+  if (adminLink) adminLink.style.display = data.role === 'admin' ? '' : 'none';
+  const scrapeCard = document.getElementById('scrapeCard');
+  if (scrapeCard) scrapeCard.style.display = data.role === 'admin' ? '' : 'none';
+  const chip = document.getElementById('userChip');
+  if (chip) {
+    chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+  }
+})();
+</script>
+</body>
+</html>

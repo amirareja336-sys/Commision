@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Admin</title>
+<!-- <link rel="stylesheet" href="/static/style.css?v=7"> -->
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Administration</h2>
+    <p class="meta-line">Manage user accounts and table access, physician commission rates, and service-to-category mappings.</p>
+    <div class="admin-grid">
+      <a class="admin-tile" href="/admin/users">
+        <div class="tile-title">Users &amp; Access</div>
+        <div class="tile-desc">Create accounts, set roles, and control which database tables each user can see.</div>
+      </a>
+      <a class="admin-tile" href="/admin/commissions">
+        <div class="tile-title">Commission Rates</div>
+        <div class="tile-desc">Set the commission percentage applied per physician when reconciliation runs.</div>
+      </a>
+      <a class="admin-tile" href="/admin/categories">
+        <div class="tile-title">Service Categories</div>
+        <div class="tile-desc">Adjust which category (Laboratory, X-ray, Ultrasound, ...) each service maps to.</div>
+      </a>
+      <a class="admin-tile" href="/admin/commission-calculator">
+        <div class="tile-title">Commission Calculator</div>
+        <div class="tile-desc">Select a physician and date range to see a full category breakdown of their total commission.</div>
+      </a>
+    </div>
+  </div>
+</main>
+
+<script>
+(async function initUserChip() {
+  const res = await fetch('/api/auth/me');
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = '/login'; return; }
+  if (data.role !== 'admin') { window.location.href = '/'; return; }
+  const chip = document.getElementById('userChip');
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById('logoutBtn').addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.href = '/login';
+  });
+})();
+</script>
+</body>
+</html>

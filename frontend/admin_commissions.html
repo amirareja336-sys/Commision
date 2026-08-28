@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Commission Rates</title>
+<!-- <link rel="stylesheet" href="/static/style.css?v=7"> -->
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <p class="meta-line" style="margin:-6px 0 18px;"><a href="/admin">← Admin</a></p>
+
+  <div class="card">
+    <h2>Commission Rates</h2>
+    <p class="meta-line">The rate set here is applied to a physician's total whenever the reconciliation pipeline's category merger step runs, producing that batch's <code>commision_percent</code> / <code>commision_amount</code>. Changing a rate does not retroactively rewrite past batches — re-run reconciliation to apply a new rate.</p>
+    <div class="table-scroll" style="max-height:none;">
+      <table id="ratesTable">
+        <thead><tr><th>Physician</th><th>Commission %</th><th></th></tr></thead>
+        <tbody id="ratesBody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = "/api/admin";
+
+async function loadRates() {
+  const res = await fetch(`${API}/commission-rates`);
+  const data = await res.json();
+  const tbody = document.getElementById('ratesBody');
+  tbody.innerHTML = data.rates.map(r => `
+    <tr>
+      <td>${r.physician_name}</td>
+      <td>
+        <div class="inline-edit-row">
+          <input type="number" min="0" max="100" step="0.1" value="${r.commission_percent}" data-physician-id="${r.physician_id}" class="rate-input">
+          <span style="color:var(--muted); font-size:12px;">%</span>
+        </div>
+      </td>
+      <td><button class="save-btn" data-physician-id="${r.physician_id}" style="padding:6px 14px; font-size:11px;">Save</button></td>
+    </tr>
+  `).join('');
+
+  tbody.querySelectorAll('.save-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const pid = btn.dataset.physicianId;
+      const input = tbody.querySelector(`.rate-input[data-physician-id="${pid}"]`);
+      const value = parseFloat(input.value);
+      const res = await fetch(`${API}/commission-rates/${pid}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commission_percent: value }),
+      });
+      if (res.ok) {
+        btn.textContent = 'Saved ✓';
+        setTimeout(() => { btn.textContent = 'Save'; }, 1200);
+      } else {
+        const d = await res.json();
+        alert(d.detail || 'Failed to save.');
+      }
+    });
+  });
+
+  if (!data.rates.length) {
+    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--muted); font-style:italic;">No physicians yet — run reconciliation at least once first.</td></tr>`;
+  }
+}
+
+(async function init() {
+  const res = await fetch('/api/auth/me');
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = '/login'; return; }
+  if (data.role !== 'admin') { window.location.href = '/'; return; }
+  const chip = document.getElementById('userChip');
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById('logoutBtn').addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.href = '/login';
+  });
+  loadRates();
+})();
+</script>
+</body>
+</html>

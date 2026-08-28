@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Service Categories</title>
+<!-- <link rel="stylesheet" href="/static/style.css?v=7"> -->
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <p class="meta-line" style="margin:-6px 0 18px;"><a href="/admin">← Admin</a></p>
+
+  <div class="card">
+    <h2>Service Categories</h2>
+    <div class="filters-row">
+      <div class="field">
+        <label>Search</label>
+        <input type="text" id="searchBox" placeholder="Filter by service name…" style="width:280px;">
+      </div>
+    </div>
+    <p class="meta-line">Services are grouped by category . Changing a service's category here updates <code>service_prices</code> directly, new reconciliation runs use it immediately. Past batches keep whatever category was in effect when they ran.</p>
+    <div class="table-scroll">
+      <table id="servicesTable">
+        <thead><tr><th>Service</th><th>Category</th><th></th></tr></thead>
+        <tbody id="servicesBody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = "/api/admin";
+let allServices = [];
+let categories = [];
+
+function groupByCategory(services) {
+  const groups = {};
+  for (const s of services) {
+    (groups[s.category] ||= []).push(s);
+  }
+  return Object.keys(groups).sort((a, b) => a.localeCompare(b))
+    .map(category => ({ category, services: groups[category] }));
+}
+
+function renderRows(services) {
+  const tbody = document.getElementById('servicesBody');
+  const groups = groupByCategory(services);
+  tbody.innerHTML = groups.map(g => `
+    <tr class="category-group-row"><td colspan="3">${g.category} <span class="group-count">(${g.services.length})</span></td></tr>
+    ${g.services.map(s => `
+      <tr>
+        <td style="padding-left:28px;">${s.service_type}</td>
+        <td>
+          <select class="cat-select" data-service-id="${s.service_id}">
+            ${categories.map(c => `<option value="${c}" ${c === s.category ? 'selected' : ''}>${c}</option>`).join('')}
+          </select>
+        </td>
+        <td><button class="save-btn" data-service-id="${s.service_id}" style="padding:6px 14px; font-size:11px;">Save</button></td>
+      </tr>
+    `).join('')}
+  `).join('');
+
+  tbody.querySelectorAll('.save-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const sid = btn.dataset.serviceId;
+      const select = tbody.querySelector(`.cat-select[data-service-id="${sid}"]`);
+      const res = await fetch(`${API}/service-categories/${sid}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: select.value }),
+      });
+      if (res.ok) {
+        // Category changed -> the service belongs in a different
+        // group now, so refresh and re-group rather than just
+        // toggling this row's button label in place.
+        await loadServices();
+      } else {
+        const d = await res.json();
+        alert(d.detail || 'Failed to save.');
+      }
+    });
+  });
+}
+
+async function loadServices() {
+  const res = await fetch(`${API}/service-categories`);
+  const data = await res.json();
+  allServices = data.services;
+  categories = data.categories;
+  renderRows(allServices);
+}
+
+document.getElementById('searchBox').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  const filtered = q ? allServices.filter(s => s.service_type.toLowerCase().includes(q)) : allServices;
+  renderRows(filtered);
+});
+
+(async function init() {
+  const res = await fetch('/api/auth/me');
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = '/login'; return; }
+  if (data.role !== 'admin') { window.location.href = '/'; return; }
+  const chip = document.getElementById('userChip');
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById('logoutBtn').addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.href = '/login';
+  });
+  loadServices();
+})();
+</script>
+</body>
+</html>
