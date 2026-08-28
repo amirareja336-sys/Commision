@@ -229,6 +229,11 @@ handles both problems so `primary_reconciliation.py` never has to guess:
    them up with no manual download/upload step. You can restrict it to
    specific physicians (comma-separated names) or leave it blank to export
    everyone not on the `skip_physicians` list in `config.json`.
+0b. **Categorize new services (Intake)** — before Run, the UI lists any
+   service names in the current uploads that are missing from
+   `dictionary.json`. The admin assigns each a category; choices are written
+   to `dictionary.json` and `service_prices`. Reconciliation will not start
+   until that list is empty.
 1. **primary_reconciliation.py** — parses every Abronal `.xlsx` (columns
    resolved through `column_adapter.py`; physician name taken from the
    filename via `physician_from_filename()`, e.g. `"dr bart jacobs july
