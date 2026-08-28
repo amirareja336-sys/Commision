@@ -5,10 +5,10 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
@@ -20,6 +20,9 @@ UPLOAD_ABR_DIR = APP_ROOT / "data" / "uploads" / "abronal"
 tempfile =  APP_ROOT / "data" / "temp"
 
 load_dotenv(ENV_PATH)
+# File values preferred over process env — on Windows, USERNAME is always the
+# OS account name and would otherwise shadow Abronal's USERNAME in .env.
+_ENV_FILE = {k: v for k, v in (dotenv_values(ENV_PATH) or {}).items() if v}
 
 
 class ScraperError(Exception):
@@ -44,7 +47,10 @@ class ScraperConfig:
 
     @staticmethod
     def _resolve(env_var: str) -> str | None:
-        raw = os.getenv(env_var)
+        # Prefer .env file so OS vars (esp. Windows USERNAME) cannot shadow Abronal.
+        raw = _ENV_FILE.get(env_var)
+        if raw is None or raw == "":
+            raw = os.getenv(env_var)
         if raw is None:
             return None
         try:
@@ -96,7 +102,7 @@ class ScraperConfig:
 
     @staticmethod
     def has_credentials() -> bool:
-        return all(os.getenv(k) for k in ("BASE_URL", "USERNAME", "PASSWORD", "ROLE"))
+        return all(ScraperConfig._resolve(k) for k in ("BASE_URL", "USERNAME", "PASSWORD", "ROLE"))
 
 
 # ── Value objects (trimmed from export_physician_performance.py) ─
@@ -157,26 +163,53 @@ class AbronalSession:
     def login(self, username: str, password: str, role: str) -> None:
         page = self.page
         page.goto(self.base_url, wait_until="domcontentloaded")
-        page.fill("#username", username)
-        page.fill("#password", password)
+        page.wait_for_selector("#username", timeout=15_000)
+
+        # Force .env credentials over Chromium autofill / password-manager.
+        page.evaluate(
+            """([u, p]) => {
+                const user = document.querySelector('#username');
+                const pass = document.querySelector('#password');
+                const fire = (el, val) => {
+                    if (!el) return;
+                    el.focus();
+                    el.value = '';
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                };
+                fire(user, u);
+                fire(pass, p);
+            }""",
+            [username, password],
+        )
         page.click("button[type='submit']")
 
         # Wait for Abronal's post-login redirect to the role-selection page.
-        # Using wait_for_url (same as the working standalone script) is more
-        # reliable than networkidle: networkidle on a busy server can time out
-        # even when the page loaded correctly, and swallowing that timeout means
-        # we silently proceed and then hit a confusing "#selRole not found" error
-        # instead of a clean "bad credentials" message
         try:
             page.wait_for_url("**/Account/LoginAs**", timeout=30_000)
         except PlaywrightTimeout as exc:
-            # Take a screenshot so the debug folder captures exactly what the
-            # browser sees when login fails (mirrors the working script's behaviour).
+            _err_txt = ""
+            try:
+                for sel in (".validation-summary-errors", ".alert-danger", "#loginError", ".field-validation-error", "body"):
+                    if page.locator(sel).count():
+                        _err_txt = (page.locator(sel).first.inner_text() or "")[:300]
+                        if _err_txt.strip():
+                            break
+            except Exception:
+                pass
             _debug_dir = APP_ROOT / "data" / "scraper_debug"
             _debug_dir.mkdir(parents=True, exist_ok=True)
-            _ts = __import__("datetime").datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            _ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             page.screenshot(path=str(_debug_dir / f"login_failure_{_ts}.png"))
             current = page.url
+            if "invalid" in (_err_txt or "").lower():
+                raise PlaywrightTimeout(
+                    f"Abronal rejected login for user '{username}' "
+                    f"(Invalid Username or password). "
+                    f"Confirm USERNAME/PASSWORD in .env — on Windows, "
+                    f"USERNAME must come from .env, not the OS account name."
+                ) from exc
             raise PlaywrightTimeout(
                 f"Role-selection page did not appear after login "
                 f"(current URL: {current}). "
@@ -185,8 +218,12 @@ class AbronalSession:
 
         page.wait_for_selector("#selRole")
         page.select_option("#selRole", label=role)
+        # Pass the id as an argument and build '#' + id in JS. Embedding
+        # '#selRole' directly in the evaluate expression can be misparsed
+        # as a private-field token (SyntaxError: Unexpected identifier 'ion').
         page.evaluate(
-            """() => { if (window.jQuery) window.jQuery('#selRole').trigger('change'); }"""
+            "(id) => { if (window.jQuery) window.jQuery('#' + id).trigger('change'); }",
+            "selRole",
         )
         page.click("button[type='submit']")
         page.wait_for_load_state("networkidle")
@@ -300,24 +337,19 @@ def run(from_date: str, to_date: str, physicians: list[str] | None = None, log=p
     log(f"Date range: {date_range.label()}")
     log("Launching browser…")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=cfg.headless)
-
-        user_data_dir = os.path.join(tempfile, "abronal_profile")
-    
-    # 3. Launch with a persistent context and strict flags to block auto-login
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            headless=False, # Set to True if running headlessly
+        # Ephemeral context + no password-manager/autofill so .env credentials
+        # always win over any Chromium-saved Abronal user.
+        browser = p.chromium.launch(
+            headless=cfg.headless,
             args=[
-                "--bwsi",                # Browse Without Sign-In (disables Google account sync)
-                "--no-first-run",         # Skips welcome screens
-                "--disable-extensions",   # Blocks any local extensions from injecting sessions
-                "--incognito"             # Forces private browsing behavior
-            ]
+                "--bwsi",  # Browse Without Sign-In
+                "--no-first-run",
+                "--disable-extensions",
+                "--disable-save-password-bubble",
+                "--disable-features=PasswordManagerOnboarding,AutofillServerCommunication,AutofillEnableAccountWalletStorage",
+            ],
         )
-    
-
-        #context = browser.new_context(accept_downloads=True)
+        context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         page.set_default_timeout(45_000)
         try:
@@ -358,6 +390,10 @@ def run(from_date: str, to_date: str, physicians: list[str] | None = None, log=p
         except PlaywrightTimeout as e:
             raise ScraperError(f"Timed out talking to Abronal: {e}") from e
         finally:
+            try:
+                context.close()
+            except Exception:
+                pass
             try:
                 browser.close()
             except Exception:
