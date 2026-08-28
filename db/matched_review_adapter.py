@@ -27,6 +27,9 @@ REVIEW_COLUMNS = [
     "user_flag_reason",
 ]
 
+# Categories omitted from the accountant review / Report table.
+HIDDEN_REVIEW_CATEGORIES = frozenset({"Nursing & Procedures"})
+
 
 def _load_dictionary() -> dict[str, str]:
     if not DICTIONARY_PATH.exists():
@@ -67,6 +70,8 @@ def id_to_name_merger(rows: list[dict], dictionary: dict[str, str] | None = None
 
     for row in rows:
         category = _category_for(row.get("service_type"), row.get("db_category"), dictionary)
+        if category in HIDDEN_REVIEW_CATEGORIES:
+            continue
         physician = (row.get("physician_name") or "").strip()
         patient = (row.get("patient_name") or "").strip()
         key = (physician.lower(), patient.lower(), category)
@@ -205,14 +210,18 @@ def _read_cache() -> list[dict] | None:
 def get_review_rows(start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     """Return condensed review rows. Unfiltered results are cached in temp/."""
     if start_date or end_date:
-        return build_review_table(start_date, end_date)
-
-    cached = _read_cache()
-    if cached is not None:
-        return cached
-    rows = build_review_table()
-    _write_cache(rows)
-    return rows
+        rows = build_review_table(start_date, end_date)
+    else:
+        cached = _read_cache()
+        if cached is not None:
+            rows = cached
+        else:
+            rows = build_review_table()
+            _write_cache(rows)
+    return [
+        r for r in rows
+        if (r.get("service_id") or "").strip() not in HIDDEN_REVIEW_CATEGORIES
+    ]
 
 
 def _like_match(value, needle: str) -> bool:
