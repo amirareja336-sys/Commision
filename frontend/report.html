@@ -19,7 +19,7 @@
 <main>
   <div class="card">
     <h2>Accountant Report</h2>
-    <p class="meta-line">Condensed matched records for review. Filter by physician and date range, then send the current view to admin.</p>
+    <p class="meta-line">Condensed matched records for review. Filter by physician and date range, flag mismatches, then send the current view to admin.</p>
     <div class="filters-row">
       <div class="field">
         <label>Physician</label>
@@ -137,14 +137,39 @@ async function loadTable() {
   const res = await fetch(`${API}/preview?${collectQuery().toString()}`);
   const data = await res.json();
   currentRows = data.rows || [];
-  thead.innerHTML = DISPLAY_COLUMNS.map(c => `<th>${c}</th>`).join("");
+  thead.innerHTML = [...DISPLAY_COLUMNS.map(c => `<th>${c}</th>`), "<th>Flag</th>"].join("");
   tbody.innerHTML = currentRows.map(r => {
     const flagged = r.user_flagged_mismatch === 1;
     const cells = DISPLAY_COLUMNS.map(c => `<td>${r[c] ?? ""}</td>`).join("");
-    return `<tr class="${flagged ? "row-flagged" : ""}">${cells}</tr>`;
+    const flagBtn = `<td><button class="flag-btn ${flagged ? "flagged" : ""}" data-id="${r.match_id}" title="${flagged ? "Unflag" : "Flag as mismatch"}">${flagged ? "🚩" : "⚑"}</button></td>`;
+    return `<tr class="${flagged ? "row-flagged" : ""}">${cells}${flagBtn}</tr>`;
   }).join("");
   document.getElementById("rowCount").textContent =
     `${currentRows.length} condensed row(s) — ready to send`;
+
+  tbody.querySelectorAll(".flag-btn").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      const matchId = e.target.dataset.id;
+      const currentlyFlagged = e.target.classList.contains("flagged");
+      const reason = currentlyFlagged ? null : prompt("Reason for flagging (optional):");
+      if (!currentlyFlagged && reason === null) return;
+      try {
+        const flagRes = await fetch(`/api/tables/matched_records/${matchId}/flag`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ flagged: !currentlyFlagged, reason: reason || null }),
+        });
+        const flagData = await flagRes.json();
+        if (flagRes.ok) {
+          await loadTable();
+        } else {
+          showBanner("fail", flagData.detail || "Failed to flag record.");
+        }
+      } catch (err) {
+        showBanner("fail", "Error flagging record: " + err.message);
+      }
+    });
+  });
 }
 
 function saveReportUi() {

@@ -65,9 +65,27 @@
     </div>
   </div>
 
+  <div class="card" id="newServicesCard" style="display:none;">
+    <h2>04 · Categorize new services</h2>
+    <p class="meta-line">These services appear in the current uploads but are not in <code>dictionary.json</code>. Assign a category for each before running reconciliation (otherwise they would be stored as Other).</p>
+    <div class="table-scroll" style="max-height:320px;">
+      <table id="newServicesTable">
+        <thead>
+          <tr><th>Service</th><th>Source</th><th>Category</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button id="saveCategoriesBtn">Save categories to dictionary</button>
+      <button id="refreshNewServicesBtn" class="secondary">Rescan uploads</button>
+    </div>
+    <div class="status-banner" id="newServicesBanner"></div>
+  </div>
+
   <div class="card">
-    <h2>04 · Run Reconciliation Pipeline</h2>
-    <p class="meta-line">Runs, in order: <b>primary_reconciliation</b> → <b>secondary_name_matcher</b> → <b>category_merger</b>.</p>
+    <h2>05 · Run Reconciliation Pipeline</h2>
+    <p class="meta-line">Runs, in order: <b>primary_reconciliation</b> → <b>secondary_name_matcher</b> → <b>category_merger</b>. Blocked until every new service above has a category.</p>
     <div class="actions">
       <button id="runBtn">Run Full Reconciliation</button>
       <button id="refreshUploadsBtn" class="secondary">Refresh Uploaded File Lists</button>
@@ -82,7 +100,7 @@
   </div>
 
   <div class="card">
-    <h2>05 · System Log</h2>
+    <h2>06 · System Log</h2>
     <div class="log-window" id="logWindow">Waiting for a run…</div>
   </div>
 </main>
@@ -110,6 +128,7 @@ function wireDropzone(zoneId, inputId, listId, endpoint) {
     const data = await res.json();
     zone.textContent = `Drop more ${endpoint === 'sot' ? 'SoT' : 'Abronal'} .xlsx files here, or click to browse`;
     refreshUploads();
+    refreshNewServices();
   }
 }
 wireDropzone('sotZone', 'sotInput', 'sotList', 'sot');
@@ -218,6 +237,7 @@ function watchScrape(batchId, { replayed } = { replayed: false }) {
       scrapeBtn.disabled = false;
       ws.close();
       refreshUploads();
+      refreshNewServices();
       return;
     }
     scrapeLog.textContent += line + '\n';
@@ -337,8 +357,22 @@ function watchPipeline(batchId, { replayed } = { replayed: false }) {
 }
 
 document.getElementById('runBtn').addEventListener('click', async () => {
+  const banner = document.getElementById('statusBanner');
   const res = await fetch(`${API}/pipeline/run`, { method: 'POST' });
   const data = await res.json();
+  if (res.status === 409) {
+    const detail = data.detail || {};
+    banner.className = 'status-banner show fail';
+    banner.textContent = detail.message || 'Categorize new services before running.';
+    await renderNewServices(detail);
+    document.getElementById('newServicesCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  if (!res.ok) {
+    banner.className = 'status-banner show fail';
+    banner.textContent = data.detail || 'Failed to start pipeline.';
+    return;
+  }
   watchPipeline(data.batch_id, { replayed: !!data.resumed });
 });
 
@@ -348,7 +382,92 @@ async function refreshUploads() {
   document.getElementById('sotList').innerHTML = data.sot.map(n => `<div>${n}</div>`).join('') || '<div>(none uploaded yet)</div>';
   document.getElementById('abrList').innerHTML = data.abronal.map(n => `<div>${n}</div>`).join('') || '<div>(none uploaded yet)</div>';
 }
-document.getElementById('refreshUploadsBtn').addEventListener('click', refreshUploads);
+document.getElementById('refreshUploadsBtn').addEventListener('click', async () => {
+  await refreshUploads();
+  await refreshNewServices();
+});
+
+let lastCategories = [];
+
+async function renderNewServices(payload) {
+  const card = document.getElementById('newServicesCard');
+  const tbody = document.querySelector('#newServicesTable tbody');
+  const services = (payload && payload.new_services) || [];
+  const categories = (payload && payload.categories) || lastCategories;
+  lastCategories = categories;
+  if (!services.length) {
+    card.style.display = 'none';
+    tbody.innerHTML = '';
+    document.getElementById('runBtn').disabled = false;
+    return;
+  }
+  card.style.display = '';
+  document.getElementById('runBtn').disabled = true;
+  const opts = categories.map(c => `<option value="${c}">${c}</option>`).join('');
+  tbody.innerHTML = services.map((s, i) => {
+    const name = typeof s === 'string' ? s : s.service;
+    const sources = (s.sources || []).join(', ') || '—';
+    return `<tr>
+      <td>${name}</td>
+      <td style="color:var(--muted);font-size:12px;">${sources}</td>
+      <td><select class="new-svc-cat" data-service="${String(name).replace(/"/g, '&quot;')}">${opts}</select></td>
+    </tr>`;
+  }).join('');
+  // Default select to Other if present
+  tbody.querySelectorAll('select.new-svc-cat').forEach(sel => {
+    if ([...sel.options].some(o => o.value === 'Other')) sel.value = 'Other';
+  });
+}
+
+async function refreshNewServices() {
+  try {
+    const res = await fetch(`${API}/pipeline/new-services`);
+    const data = await res.json();
+    if (!res.ok) return;
+    await renderNewServices(data);
+    const banner = document.getElementById('newServicesBanner');
+    if ((data.new_services || []).length) {
+      banner.className = 'status-banner show fail';
+      banner.textContent = `${data.new_services.length} new service(s) need a category before Run.`;
+    } else {
+      banner.className = 'status-banner';
+      banner.textContent = '';
+    }
+  } catch (e) { /* ignore */ }
+}
+
+document.getElementById('refreshNewServicesBtn').addEventListener('click', refreshNewServices);
+
+document.getElementById('saveCategoriesBtn').addEventListener('click', async () => {
+  const banner = document.getElementById('newServicesBanner');
+  const assignments = {};
+  document.querySelectorAll('select.new-svc-cat').forEach(sel => {
+    assignments[sel.dataset.service] = sel.value;
+  });
+  if (!Object.keys(assignments).length) {
+    banner.className = 'status-banner show fail';
+    banner.textContent = 'Nothing to save.';
+    return;
+  }
+  const res = await fetch(`${API}/pipeline/categorize-services`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assignments }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    banner.className = 'status-banner show fail';
+    banner.textContent = data.detail || 'Failed to save categories.';
+    return;
+  }
+  banner.className = 'status-banner show success';
+  banner.textContent = `Saved ${data.saved} service(s) to dictionary.json.`;
+  await renderNewServices(data.remaining || { new_services: [] });
+});
+
+checkScraperConfig();
+refreshUploads().then(refreshNewServices);
+restoreRuntime();
 
 async function restoreRuntime() {
   try {
@@ -382,10 +501,6 @@ async function restoreRuntime() {
     /* ignore — fresh page */
   }
 }
-
-checkScraperConfig();
-refreshUploads();
-restoreRuntime();
 
 // ── Auth: populate user chip, show Admin tab, wire logout ───────
 (async function initUserChip() {

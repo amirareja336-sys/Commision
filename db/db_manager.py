@@ -16,6 +16,7 @@ from pathlib import Path
 DB_DIR = Path(__file__).resolve().parent
 DB_PATH = DB_DIR / "commissions.db"
 SCHEMA_PATH = DB_DIR / "schema.sql"
+DICTIONARY_PATH = DB_DIR.parent / "dictionary.json"
 
 # Tables a role='user' account can see on the Evaluation page unless an
 # admin has explicitly customized their access via user_table_access.
@@ -256,6 +257,55 @@ def seed_dictionary(dictionary_path: Path) -> int:
             n += 1
     print(f"Seeded/updated {n} services from {dictionary_path}")
     return n
+
+
+def load_dictionary(dictionary_path: Path | None = None) -> dict[str, str]:
+    path = Path(dictionary_path) if dictionary_path else DICTIONARY_PATH
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_dictionary_entries(
+    assignments: dict[str, str],
+    dictionary_path: Path | None = None,
+) -> dict:
+    """Merge service→category into dictionary.json and upsert service_prices.
+
+    Returns counts of written entries. Invalid categories are rejected.
+    """
+    path = Path(dictionary_path) if dictionary_path else DICTIONARY_PATH
+    cleaned: dict[str, str] = {}
+    for service, category in (assignments or {}).items():
+        name = (service or "").strip()
+        cat = (category or "").strip()
+        if not name:
+            continue
+        if cat not in VALID_CATEGORIES:
+            raise ValueError(f"Invalid category for {name!r}: {cat!r}")
+        cleaned[name] = cat
+    if not cleaned:
+        raise ValueError("No service assignments provided")
+
+    current = load_dictionary(path)
+    current.update(cleaned)
+    # Stable key order for readable diffs.
+    ordered = {k: current[k] for k in sorted(current.keys(), key=lambda s: s.lower())}
+    path.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    with get_conn() as conn:
+        for service, cat in cleaned.items():
+            conn.execute(
+                """INSERT INTO service_prices (service_type, category, cost)
+                   VALUES (?, ?, 0)
+                   ON CONFLICT(service_type) DO UPDATE SET category=excluded.category""",
+                (service, cat),
+            )
+    return {"saved": len(cleaned), "dictionary_size": len(ordered), "path": str(path)}
 
 
 # ── Password hashing (PBKDF2-HMAC-SHA256, stdlib only) ───────────
@@ -544,7 +594,11 @@ def get_or_create_service(conn: sqlite3.Connection, service_type: str, category:
     ).fetchone()
     if row:
         return row["service_id"]
-    cat = category if category in VALID_CATEGORIES else "Other"
+    cat = category if category in VALID_CATEGORIES else None
+    if cat is None:
+        cat = load_dictionary().get(service_type)
+    if cat not in VALID_CATEGORIES:
+        cat = "Other"
     cur = conn.execute(
         "INSERT INTO service_prices (service_type, category, cost) VALUES (?, ?, 0)",
         (service_type, cat),
@@ -557,6 +611,9 @@ TABLES = [
     "matched_records", "unmatched_records", "commission_per_physicians",
 ]
 
+# Admin spreadsheet editor — work DB only (never the backup).
+EDITABLE_TABLES = TABLES + ["physician_commission_rates"]
+
 TABLE_DATE_COLUMNS = {
     "abronal_mirror": "payment_date",
     "sot_mirror": "transaction_date",
@@ -566,6 +623,9 @@ TABLE_DATE_COLUMNS = {
 }
 
 TABLE_PK_COLUMNS = {
+    "physicians": "physician_id",
+    "service_prices": "service_id",
+    "physician_commission_rates": "physician_id",
     "abronal_mirror": "row_id",
     "sot_mirror": "row_id",
     "matched_records": "match_id",
@@ -611,11 +671,100 @@ def table_columns(table: str) -> list[str]:
         with get_conn() as conn:
             rows = conn.execute("PRAGMA table_info(reports)").fetchall()
         return [r["name"] for r in rows]
-    if table not in TABLES:
+    if table not in EDITABLE_TABLES and table not in TABLES:
         raise ValueError(f"Unknown table: {table}")
     with get_conn() as conn:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        rows = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
     return [r["name"] for r in rows]
+
+
+def pk_column(table: str) -> str:
+    if table not in EDITABLE_TABLES:
+        raise ValueError(f"Table is not editable: {table}")
+    return TABLE_PK_COLUMNS.get(table) or table_columns(table)[0]
+
+
+def fetch_editable_table(table: str, limit: int = 200, offset: int = 0) -> list[dict]:
+    if table not in EDITABLE_TABLES:
+        raise ValueError(f"Table is not editable: {table}")
+    if table in TABLES:
+        return fetch_table(table, limit=limit, offset=offset)
+    pk = pk_column(table)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f'SELECT * FROM "{table}" ORDER BY "{pk}" ASC LIMIT ? OFFSET ?',
+            (int(limit), int(offset)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_editable_table(table: str) -> int:
+    if table not in EDITABLE_TABLES:
+        raise ValueError(f"Table is not editable: {table}")
+    if table in TABLES:
+        return count_table(table)
+    with get_conn() as conn:
+        row = conn.execute(f'SELECT COUNT(*) AS c FROM "{table}"').fetchone()
+    return int(row["c"]) if row else 0
+
+
+def update_table_row(table: str, pk_value, values: dict) -> dict:
+    """Update a work-DB row. Primary key column cannot be changed."""
+    if table not in EDITABLE_TABLES:
+        raise ValueError(f"Table is not editable: {table}")
+    pk = pk_column(table)
+    cols = table_columns(table)
+    payload = {k: v for k, v in values.items() if k in cols and k != pk}
+    if not payload:
+        raise ValueError("No updatable columns provided")
+    sets = ", ".join(f'"{c}" = ?' for c in payload)
+    params = list(payload.values()) + [pk_value]
+    with get_conn() as conn:
+        cur = conn.execute(
+            f'UPDATE "{table}" SET {sets} WHERE "{pk}" = ?',
+            params,
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"No row with {pk}={pk_value}")
+        row = conn.execute(
+            f'SELECT * FROM "{table}" WHERE "{pk}" = ?', (pk_value,)
+        ).fetchone()
+    return dict(row)
+
+
+def insert_table_row(table: str, values: dict) -> dict:
+    if table not in EDITABLE_TABLES:
+        raise ValueError(f"Table is not editable: {table}")
+    pk = pk_column(table)
+    cols = [c for c in table_columns(table) if c != pk or values.get(c) not in (None, "")]
+    # Prefer letting AUTOINCREMENT assign PK when omitted.
+    if pk in cols and (values.get(pk) is None or values.get(pk) == ""):
+        cols = [c for c in cols if c != pk]
+    if not cols:
+        raise ValueError("No columns to insert")
+    placeholders = ", ".join("?" for _ in cols)
+    col_sql = ", ".join(f'"{c}"' for c in cols)
+    params = [values.get(c) for c in cols]
+    with get_conn() as conn:
+        cur = conn.execute(
+            f'INSERT INTO "{table}" ({col_sql}) VALUES ({placeholders})',
+            params,
+        )
+        new_id = values.get(pk) if pk in cols else cur.lastrowid
+        row = conn.execute(
+            f'SELECT * FROM "{table}" WHERE "{pk}" = ?', (new_id,)
+        ).fetchone()
+    return dict(row)
+
+
+def delete_table_row(table: str, pk_value) -> None:
+    if table not in EDITABLE_TABLES:
+        raise ValueError(f"Table is not editable: {table}")
+    pk = pk_column(table)
+    with get_conn() as conn:
+        cur = conn.execute(f'DELETE FROM "{table}" WHERE "{pk}" = ?', (pk_value,))
+        if cur.rowcount == 0:
+            raise KeyError(f"No row with {pk}={pk_value}")
 
 
 def _date_expr_for_table(table: str, date_column: str | None = None) -> str | None:

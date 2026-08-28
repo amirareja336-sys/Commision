@@ -136,3 +136,8 @@ def admin_commission_calculator_page(request: Request):
 @app.get("/admin/reports")
 def admin_reports_page(request: Request):
     return _admin_page(request, "admin_reports.html")
+
+
+@app.get("/admin/db")
+def admin_db_page(request: Request):
+    return _admin_page(request, "admin_db.html")

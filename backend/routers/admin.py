@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "db"))
 import auth  # noqa: E402
 import db_manager as dbm  # noqa: E402
+import backup_manager as backup  # noqa: E402
 
 router = APIRouter(dependencies=[Depends(auth.require_admin)])
 
@@ -178,3 +179,100 @@ def view_reports(
         submission_id=submission_id,
     )
     return {"rows": rows, "total": total}
+
+
+# ── Work-DB spreadsheet editor + backup sync ─────────────────────
+
+class DbRowPayload(BaseModel):
+    values: dict = {}
+
+
+@router.get("/db/tables")
+def db_tables():
+    return {
+        "tables": [
+            {"name": t, "pk": dbm.pk_column(t), "columns": dbm.table_columns(t)}
+            for t in dbm.EDITABLE_TABLES
+        ]
+    }
+
+
+@router.get("/db/tables/{table}")
+def db_table_rows(table: str, limit: int = 200, offset: int = 0):
+    if table not in dbm.EDITABLE_TABLES:
+        raise HTTPException(status_code=404, detail="Unknown or non-editable table")
+    try:
+        rows = dbm.fetch_editable_table(table, limit=limit, offset=offset)
+        total = dbm.count_editable_table(table)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "table": table,
+        "pk": dbm.pk_column(table),
+        "columns": dbm.table_columns(table),
+        "rows": rows,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.put("/db/tables/{table}/{pk_value}")
+def db_update_row(table: str, pk_value: str, req: DbRowPayload):
+    if table not in dbm.EDITABLE_TABLES:
+        raise HTTPException(status_code=404, detail="Unknown or non-editable table")
+    try:
+        coerced = _coerce_pk(table, pk_value)
+        row = dbm.update_table_row(table, coerced, req.values)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Update failed: {e}") from e
+    return {"row": row}
+
+
+@router.post("/db/tables/{table}")
+def db_insert_row(table: str, req: DbRowPayload):
+    if table not in dbm.EDITABLE_TABLES:
+        raise HTTPException(status_code=404, detail="Unknown or non-editable table")
+    try:
+        row = dbm.insert_table_row(table, req.values)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Insert failed: {e}") from e
+    return {"row": row}
+
+
+@router.delete("/db/tables/{table}/{pk_value}")
+def db_delete_row(table: str, pk_value: str):
+    if table not in dbm.EDITABLE_TABLES:
+        raise HTTPException(status_code=404, detail="Unknown or non-editable table")
+    try:
+        dbm.delete_table_row(table, _coerce_pk(table, pk_value))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Delete failed: {e}") from e
+    return {"ok": True}
+
+
+@router.get("/db/backup")
+def db_backup_status():
+    return backup.backup_status()
+
+
+@router.post("/db/backup/sync")
+def db_backup_sync():
+    try:
+        return backup.sync_backup_from_work()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+def _coerce_pk(table: str, pk_value: str):
+    """PKs are integers for all editable tables today."""
+    try:
+        return int(pk_value)
+    except (TypeError, ValueError):
+        return pk_value

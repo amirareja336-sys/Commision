@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.18 — Categorize new services before reconciliation
+
+**Added**
+- **Intake step “Categorize new services”.** Scans Abronal/SoT uploads for service names missing from `dictionary.json`, shows a category picker per service, and saves choices into `dictionary.json` + `service_prices`. **Run Full Reconciliation** is blocked (HTTP 409) until none remain. New services created during the pipeline also read the dictionary instead of defaulting blindly to Other.
+
+## v0.17 — Admin DB editor and archival backup
+
+**Added**
+- **Admin → Database** (`/admin/db`): spreadsheet-style editor for the work DB (`db/commissions.db`) — pick a table, edit cells, save/add/delete rows (chunked).
+- **Archival backup** at `db/commissions_backup.db`: normal app logic never opens it. Sync appends new work rows (`INSERT OR IGNORE` by PK, so existing backup rows stay immutable) and is the only place that may delete `unmatched_records` when they disappear from work after a later match. Sync runs after a successful pipeline and via **Sync backup from work DB**.
+
+## v0.16 — Rematch prior unmatched against new Abronal/SoT
+
+**Changed**
+- **Primary reconciliation now re-tests existing `unmatched_records` against the new upload before writing more unmatched rows.** Abronal-only unmatched that find a SoT counterpart (same normalized name + amount) move to `matched_records` (`match_type=exact_rematch`); SoT-only unmatched that find an Abronal counterpart do the same. Consumed new rows are excluded from the normal exact-match pass so they are not left unmatched again.
+
 ## v0.15 — Runtime state across page switches
 
 **Added**

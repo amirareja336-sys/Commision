@@ -240,6 +240,205 @@ def persist_mirrors(abr_rows, sot_rows, batch_id, log):
     return abr_rows, sot_rows
 
 
+def rematch_prior_unmatched(abr_rows, sot_rows, batch_id, log):
+    """Resolve leftover unmatched_records against *new* Abronal/SoT rows.
+
+    Before this run adds more unmatched rows:
+      - prior Abronal-only unmatched + new SoT counterpart → matched
+      - prior SoT-only unmatched + new Abronal counterpart → matched
+
+    Returns sets of new-run mirror row_ids already consumed so the exact
+    match phase does not reuse them.
+    """
+    amount_tol = 0.01
+    new_abr = [a for a in abr_rows if a.get("row_id")]
+    new_sot = [s for s in sot_rows if s.get("row_id")]
+    consumed_abr: set[int] = set()
+    consumed_sot: set[int] = set()
+    if not new_abr and not new_sot:
+        log("Prior-unmatched rematch: no new mirror rows to test against.")
+        return consumed_abr, consumed_sot, 0
+
+    abr_by_name: dict[str, list] = {}
+    for a in new_abr:
+        abr_by_name.setdefault(normalize_string(a["patient_full_name"]), []).append(a)
+    sot_by_name: dict[str, list] = {}
+    for s in new_sot:
+        sot_by_name.setdefault(normalize_string(s["customer"]), []).append(s)
+
+    promoted = 0
+    with dbm.get_conn() as conn:
+        already_matched_abr = {
+            r[0] for r in conn.execute(
+                "SELECT abronal_row_id FROM matched_records WHERE abronal_row_id IS NOT NULL"
+            )
+        }
+        already_matched_sot = {
+            r[0] for r in conn.execute(
+                "SELECT sot_row_id FROM matched_records WHERE sot_row_id IS NOT NULL"
+            )
+        }
+
+        prior_abr = [dict(r) for r in conn.execute(
+            """SELECT * FROM unmatched_records
+               WHERE abronal_row_id IS NOT NULL AND sot_row_id IS NULL"""
+        ).fetchall()]
+        prior_sot = [dict(r) for r in conn.execute(
+            """SELECT * FROM unmatched_records
+               WHERE sot_row_id IS NOT NULL AND abronal_row_id IS NULL"""
+        ).fetchall()]
+
+        def _insert_match(*, patient_name, service_id, total_amount, net_amount,
+                          payment_date, physician_id, physician_name,
+                          abronal_row_id, sot_row_id):
+            match_key = {
+                "patient_name": patient_name,
+                "service_id": service_id,
+                "net_amount": net_amount,
+                "payment_date": payment_date,
+                "physician_id": physician_id,
+                "abronal_row_id": abronal_row_id,
+                "sot_row_id": sot_row_id,
+            }
+            if not dbm.row_exists(conn, "matched_records", match_key):
+                conn.execute(
+                    """INSERT INTO matched_records
+                       (patient_name, service_id, total_amount, net_amount, payment_date,
+                        physician_id, physician_name, match_type, confidence, user_flagged_mismatch,
+                        user_flag_reason, abronal_row_id, sot_row_id, batch_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (patient_name, service_id, total_amount, net_amount, payment_date,
+                     physician_id, physician_name or "", "exact_rematch", 1.0, 0, None,
+                     abronal_row_id, sot_row_id, batch_id),
+                )
+
+        # Abronal unmatched → new SoT counterpart
+        for u in prior_abr:
+            aid = u["abronal_row_id"]
+            if aid in already_matched_abr:
+                conn.execute(
+                    "DELETE FROM unmatched_records WHERE unmatched_id = ?",
+                    (u["unmatched_id"],),
+                )
+                continue
+            name = normalize_string(u.get("abronal_patient_name") or "")
+            amount = float(u.get("abronal_net_amount") or 0)
+            found = None
+            for s in sot_by_name.get(name, []):
+                sid = s["row_id"]
+                if sid in consumed_sot or sid in already_matched_sot:
+                    continue
+                if abs(amount - float(s["sub_total"])) < amount_tol:
+                    found = s
+                    break
+            if not found:
+                continue
+
+            mirror = conn.execute(
+                "SELECT service_id, total, net, payment_date, physician_id FROM abronal_mirror WHERE row_id = ?",
+                (aid,),
+            ).fetchone()
+            service_id = mirror["service_id"] if mirror else dbm.get_or_create_service(
+                conn, u.get("abronal_service_type") or "Unknown"
+            )
+            physician_id = (mirror["physician_id"] if mirror else None) or u.get("physician_id")
+            physician_name = u.get("physician_name") or ""
+            if not physician_name and physician_id:
+                phys = conn.execute(
+                    "SELECT physician_name FROM physicians WHERE physician_id = ?",
+                    (physician_id,),
+                ).fetchone()
+                physician_name = phys["physician_name"] if phys else ""
+            total_amount = float(mirror["total"]) if mirror and mirror["total"] is not None else amount
+            net_amount = float(mirror["net"]) if mirror and mirror["net"] is not None else amount
+            payment_date = (
+                (mirror["payment_date"] if mirror else None)
+                or u.get("abronal_payment_date")
+                or found.get("transaction_date")
+            )
+
+            _insert_match(
+                patient_name=u.get("abronal_patient_name") or "",
+                service_id=service_id,
+                total_amount=total_amount,
+                net_amount=net_amount,
+                payment_date=payment_date,
+                physician_id=physician_id,
+                physician_name=physician_name,
+                abronal_row_id=aid,
+                sot_row_id=found["row_id"],
+            )
+            conn.execute(
+                "DELETE FROM unmatched_records WHERE unmatched_id = ?",
+                (u["unmatched_id"],),
+            )
+            conn.execute(
+                """DELETE FROM unmatched_records
+                   WHERE sot_row_id = ? AND abronal_row_id IS NULL""",
+                (found["row_id"],),
+            )
+            consumed_sot.add(found["row_id"])
+            consumed_abr.add(aid)
+            already_matched_abr.add(aid)
+            already_matched_sot.add(found["row_id"])
+            promoted += 1
+
+        # SoT unmatched → new Abronal counterpart
+        for u in prior_sot:
+            sid = u["sot_row_id"]
+            if sid in already_matched_sot or sid in consumed_sot:
+                if sid in already_matched_sot:
+                    conn.execute(
+                        "DELETE FROM unmatched_records WHERE unmatched_id = ?",
+                        (u["unmatched_id"],),
+                    )
+                continue
+            name = normalize_string(u.get("sot_patient_name") or "")
+            amount = float(u.get("sot_amount") or 0)
+            found = None
+            for a in abr_by_name.get(name, []):
+                aid = a["row_id"]
+                if aid in consumed_abr or aid in already_matched_abr:
+                    continue
+                if abs(float(a["net"]) - amount) < amount_tol:
+                    found = a
+                    break
+            if not found:
+                continue
+
+            _insert_match(
+                patient_name=found["patient_full_name"],
+                service_id=found["service_id"],
+                total_amount=found["total"],
+                net_amount=found["net"],
+                payment_date=found.get("payment_date") or u.get("sot_payment_date"),
+                physician_id=found["physician_id"],
+                physician_name=found.get("physician_name") or "",
+                abronal_row_id=found["row_id"],
+                sot_row_id=sid,
+            )
+            conn.execute(
+                "DELETE FROM unmatched_records WHERE unmatched_id = ?",
+                (u["unmatched_id"],),
+            )
+            conn.execute(
+                """DELETE FROM unmatched_records
+                   WHERE abronal_row_id = ? AND sot_row_id IS NULL""",
+                (found["row_id"],),
+            )
+            consumed_abr.add(found["row_id"])
+            consumed_sot.add(sid)
+            already_matched_abr.add(found["row_id"])
+            already_matched_sot.add(sid)
+            promoted += 1
+
+    log(
+        f"Prior-unmatched rematch: promoted {promoted} to matched_records "
+        f"(reserved {len(consumed_abr)} Abronal / {len(consumed_sot)} SoT from this run)."
+    )
+    return consumed_abr, consumed_sot, promoted
+
+
 def match_records(abr_rows, sot_rows, batch_id, log):
     sot_by_name = {}
     for s in sot_rows:
@@ -380,6 +579,12 @@ def run(abr_dir: str, sot_dir: str, batch_id: str, log=print):
     log("── Mirroring rows into the database ──")
     abr_rows, sot_rows = persist_mirrors(abr_rows, sot_rows, batch_id, log)
 
+    log("── Rematching prior unmatched against new data ──")
+    used_abr, used_sot, rematched = rematch_prior_unmatched(abr_rows, sot_rows, batch_id, log)
+    if used_abr or used_sot:
+        abr_rows = [a for a in abr_rows if a.get("row_id") not in used_abr]
+        sot_rows = [s for s in sot_rows if s.get("row_id") not in used_sot]
+
     log("── Matching Abronal <-> SoT ──")
     matched, unmatched_abr, unmatched_sot = match_records(abr_rows, sot_rows, batch_id, log)
 
@@ -388,6 +593,7 @@ def run(abr_dir: str, sot_dir: str, batch_id: str, log=print):
 
     return {
         "matched": len(matched),
+        "rematched_prior": rematched,
         "unmatched_abronal": len(unmatched_abr),
         "unmatched_sot": len(unmatched_sot),
     }

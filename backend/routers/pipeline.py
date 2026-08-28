@@ -7,7 +7,8 @@ import traceback
 from pathlib import Path
 from typing import Dict, List
 
-from fastapi import APIRouter, Depends, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
+from pydantic import BaseModel
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = APP_ROOT / "data"
@@ -26,6 +27,7 @@ import category_merger  # noqa: E402
 import matched_review_adapter as review  # noqa: E402
 import auth  # noqa: E402
 import runtime_state as rt  # noqa: E402
+import service_discovery  # noqa: E402
 
 router = APIRouter()
 
@@ -72,6 +74,53 @@ def list_uploads(user=Depends(auth.require_admin)):
     }
 
 
+@router.get("/new-services")
+def list_new_services(user=Depends(auth.require_admin)):
+    """Services in current uploads that are missing from dictionary.json."""
+    return service_discovery.discover_new_services(UPLOAD_ABR_DIR, UPLOAD_SOT_DIR)
+
+
+class CategorizeServicesRequest(BaseModel):
+    assignments: dict[str, str]
+
+
+@router.post("/categorize-services")
+def categorize_services(req: CategorizeServicesRequest, user=Depends(auth.require_admin)):
+    """Save admin categories into dictionary.json and service_prices."""
+    try:
+        result = dbm.save_dictionary_entries(req.assignments)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    remaining = service_discovery.discover_new_services(UPLOAD_ABR_DIR, UPLOAD_SOT_DIR)
+    return {**result, "remaining": remaining}
+
+
+@router.post("/run")
+async def run_pipeline(user=Depends(auth.require_admin)):
+    pending = service_discovery.discover_new_services(UPLOAD_ABR_DIR, UPLOAD_SOT_DIR)
+    if pending.get("new_services"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{len(pending['new_services'])} new service(s) need categories "
+                    "before reconciliation can run."
+                ),
+                "new_services": pending["new_services"],
+                "categories": pending["categories"],
+            },
+        )
+    current = rt.get_job("pipeline")
+    if current.get("status") == "running" and current.get("batch_id"):
+        return {"batch_id": current["batch_id"], "resumed": True}
+    batch_id = dbm.new_batch_id()
+    RUN_LOGS[batch_id] = []
+    RUN_LISTENERS[batch_id] = []
+    rt.start_job("pipeline", batch_id)
+    asyncio.get_event_loop().run_in_executor(None, _run_pipeline_sync, batch_id)
+    return {"batch_id": batch_id, "resumed": False}
+
+
 def _run_pipeline_sync(batch_id: str):
     try:
         _emit(batch_id, f"Starting pipeline run {batch_id}")
@@ -93,24 +142,23 @@ def _run_pipeline_sync(batch_id: str):
         review.invalidate_review_cache()
         _emit(batch_id, "Accountant review cache cleared.")
 
+        try:
+            import backup_manager as backup  # noqa: E402
+            sync = backup.sync_backup_from_work()
+            _emit(
+                batch_id,
+                "Backup DB synced "
+                f"(+{sum(sync.get('inserted', {}).values())} rows, "
+                f"-{sync.get('deleted_unmatched', 0)} unmatched).",
+            )
+        except Exception as be:  # noqa: BLE001
+            _emit(batch_id, f"WARNING: backup sync failed: {be}")
+
         _emit(batch_id, "PIPELINE_DONE::success")
     except Exception as e:  # noqa: BLE001
         tb = traceback.format_exc()
         _emit(batch_id, f"ERROR: {e}\n{tb}")
         _emit(batch_id, "PIPELINE_DONE::failed")
-
-
-@router.post("/run")
-async def run_pipeline(user=Depends(auth.require_admin)):
-    current = rt.get_job("pipeline")
-    if current.get("status") == "running" and current.get("batch_id"):
-        return {"batch_id": current["batch_id"], "resumed": True}
-    batch_id = dbm.new_batch_id()
-    RUN_LOGS[batch_id] = []
-    RUN_LISTENERS[batch_id] = []
-    rt.start_job("pipeline", batch_id)
-    asyncio.get_event_loop().run_in_executor(None, _run_pipeline_sync, batch_id)
-    return {"batch_id": batch_id, "resumed": False}
 
 
 @router.get("/status")

@@ -179,6 +179,12 @@ accounts, and the pages 403/redirect if visited directly without it):
   sorted alphabetically, services sorted alphabetically within each
   category) with an editable category dropdown per service, for fixing a
   miscategorized service without touching `dictionary.json`.
+- **Database** (`/admin/db`) — spreadsheet editor for the work DB
+  (`db/commissions.db`). Syncs an archival backup (`db/commissions_backup.db`)
+  that the app never edits: new rows are appended only; existing backup
+  rows stay immutable; `unmatched_records` may be deleted there when later
+  matches remove them from work. Sync runs after a successful pipeline and
+  via the page button.
 
 ## Column adapter
 
@@ -227,8 +233,11 @@ handles both problems so `primary_reconciliation.py` never has to guess:
    resolved through `column_adapter.py`; physician name taken from the
    filename via `physician_from_filename()`, e.g. `"dr bart jacobs july
    1-9.xlsx"` -> `Bart Jacobs`) and every SoT `.xlsx`, mirrors both into
-   `abronal_mirror` / `sot_mirror`, exact-matches on name+amount, and writes
-   `matched_records` / `unmatched_records`.
+   `abronal_mirror` / `sot_mirror`, then **re-tests existing
+   `unmatched_records` against the new data** (Abronal unmatched + new SoT,
+   or SoT unmatched + new Abronal → `matched_records` with
+   `match_type=exact_rematch`), exact-matches the remaining new rows on
+   name+amount, and writes `matched_records` / `unmatched_records`.
 2. **secondary_name_matcher.py** — for the leftovers, tries to fix spelling
    mismatches: candidate pairs need >=70% character similarity, matching
    amount, and visit dates within 1 day. Matches are renamed to the Abronal
