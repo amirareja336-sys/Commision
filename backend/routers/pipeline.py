@@ -23,6 +23,7 @@ import db_manager as dbm  # noqa: E402
 import primary_reconciliation  # noqa: E402
 import secondary_name_matcher  # noqa: E402
 import category_merger  # noqa: E402
+import matched_review_adapter as review  # noqa: E402
 import auth  # noqa: E402
 
 router = APIRouter()
@@ -41,7 +42,7 @@ def _emit(batch_id: str, message: str):
 
 
 @router.post("/upload/sot")
-async def upload_sot(files: List[UploadFile] = File(...), user=Depends(auth.require_user)):
+async def upload_sot(files: List[UploadFile] = File(...), user=Depends(auth.require_admin)):
     saved = []
     for f in files:
         dest = UPLOAD_SOT_DIR / f.filename
@@ -52,7 +53,7 @@ async def upload_sot(files: List[UploadFile] = File(...), user=Depends(auth.requ
 
 
 @router.post("/upload/abronal")
-async def upload_abronal(files: List[UploadFile] = File(...), user=Depends(auth.require_user)):
+async def upload_abronal(files: List[UploadFile] = File(...), user=Depends(auth.require_admin)):
     saved = []
     for f in files:
         dest = UPLOAD_ABR_DIR / f.filename
@@ -63,7 +64,7 @@ async def upload_abronal(files: List[UploadFile] = File(...), user=Depends(auth.
 
 
 @router.get("/uploads")
-def list_uploads(user=Depends(auth.require_user)):
+def list_uploads(user=Depends(auth.require_admin)):
     return {
         "sot": sorted(p.name for p in UPLOAD_SOT_DIR.glob("*.xlsx")),
         "abronal": sorted(p.name for p in UPLOAD_ABR_DIR.glob("*.xlsx")),
@@ -88,6 +89,9 @@ def _run_pipeline_sync(batch_id: str):
         r3 = category_merger.run(batch_id, log=lambda m: _emit(batch_id, m))
         _emit(batch_id, f"Category merger done: {len(r3)} rows condensed.")
 
+        review.invalidate_review_cache()
+        _emit(batch_id, "Accountant review cache cleared.")
+
         _emit(batch_id, "PIPELINE_DONE::success")
     except Exception as e:  # noqa: BLE001
         tb = traceback.format_exc()
@@ -96,7 +100,7 @@ def _run_pipeline_sync(batch_id: str):
 
 
 @router.post("/run")
-async def run_pipeline(user=Depends(auth.require_user)):
+async def run_pipeline(user=Depends(auth.require_admin)):
     batch_id = dbm.new_batch_id()
     RUN_LOGS[batch_id] = []
     RUN_LISTENERS[batch_id] = []
@@ -105,7 +109,7 @@ async def run_pipeline(user=Depends(auth.require_user)):
 
 
 @router.get("/log/{batch_id}")
-def get_log(batch_id: str, user=Depends(auth.require_user)):
+def get_log(batch_id: str, user=Depends(auth.require_admin)):
     return {"lines": RUN_LOGS.get(batch_id, [])}
 
 

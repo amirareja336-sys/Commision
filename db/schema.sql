@@ -158,3 +158,30 @@ CREATE INDEX IF NOT EXISTS idx_sot_service ON sot_mirror(service_id);
 CREATE INDEX IF NOT EXISTS idx_matched_physician ON matched_records(physician_id);
 CREATE INDEX IF NOT EXISTS idx_unmatched_physician ON unmatched_records(physician_id);
 CREATE INDEX IF NOT EXISTS idx_commission_physician ON commission_per_physicians(physician_id);
+
+-- ── Accountant report snapshots (submitted from the user Report page) ─
+CREATE TABLE IF NOT EXISTS reports (
+    report_row_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    submission_id           TEXT NOT NULL,
+    submitted_by            INTEGER REFERENCES users(user_id),
+    submitted_by_name       TEXT NOT NULL DEFAULT '',
+    submitted_at            TEXT NOT NULL,
+    match_id                INTEGER,
+    physician_id            INTEGER,
+    physician_name          TEXT NOT NULL DEFAULT '',
+    patient_name            TEXT NOT NULL DEFAULT '',
+    service_id              TEXT,
+    total_amount            REAL NOT NULL DEFAULT 0,
+    net_amount              REAL NOT NULL DEFAULT 0,
+    payment_date            TEXT,
+    match_type              TEXT,
+    confidence              REAL,
+    user_flagged_mismatch   INTEGER NOT NULL DEFAULT 0,
+    user_flag_reason        TEXT,
+    filter_physician        TEXT,
+    filter_start_date       TEXT,
+    filter_end_date         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reports_physician ON reports(physician_name);
+CREATE INDEX IF NOT EXISTS idx_reports_date ON reports(payment_date);
+CREATE INDEX IF NOT EXISTS idx_reports_submission ON reports(submission_id);

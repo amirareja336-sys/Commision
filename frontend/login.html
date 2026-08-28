@@ -44,7 +44,7 @@ form.addEventListener('submit', async (e) => {
   });
   const data = await res.json();
   if (res.ok) {
-    window.location.href = '/';
+    window.location.href = data.role === 'user' ? '/report' : '/';
   } else {
     errorBanner.textContent = data.error || 'Login failed.';
     errorBanner.classList.add('show');

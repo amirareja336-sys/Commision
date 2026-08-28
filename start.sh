@@ -8,6 +8,8 @@
 set -e
 
 PORT="${PORT:-8000}"
+HOST="${HOST:-0.0.0.0}"
+STATIC_IP="${STATIC_IP:-192.168.1.2}"
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Activate venv if it exists next to this script
@@ -15,18 +17,13 @@ if [ -f "$APP_DIR/venv/bin/activate" ]; then
     source "$APP_DIR/venv/bin/activate"
 fi
 
-# Print the LAN IP so you can share it with other PCs on the network
-LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Reconciliation Console"
 echo "  Local:   http://localhost:${PORT}"
-if [ -n "$LAN_IP" ]; then
-    echo "  Network: http://${LAN_IP}:${PORT}  ← share this with other PCs"
-fi
+echo "  Network: http://${STATIC_IP}:${PORT}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$APP_DIR"
 exec uvicorn backend.main:app \
-    --host 0.0.0.0 \
-    --port "$PORT" \
-    --reload
+    --host "$HOST" \
+    --port "$PORT"

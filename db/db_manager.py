@@ -40,56 +40,136 @@ def new_batch_id() -> str:
 
 
 # ── Date normalization ────────────────────────────────────────────
-# Payment/visit/transaction dates come out of Excel in whatever shape
-# the source file happened to use — most commonly either an
-# ISO-ish string produced by pandas turning a date-typed cell into a
-# Timestamp ("2026-07-02 00:00:00") or plain dd/mm/yyyy text typed
-# into the sheet, sometimes with a trailing time ("02/07/2026 14:30").
-# SQLite's own date() function only understands the ISO shape, so a
-# dd/mm/yyyy value silently fails to parse and the row drops out of
-# every date-range filter — this is what "the date filter just
-# doesn't work" turned out to be. normalize_date_to_iso() below
-# strips any trailing HH:MM[:SS] first, then tries ISO (yyyy-mm-dd)
-# and only then dd/mm/yyyy (day-first, matching the source data —
-# never month-first), returning a plain 'YYYY-MM-DD' string SQLite
-# can compare lexically, or None if the value truly can't be parsed
-# (which safely excludes it from range filters rather than erroring).
+# Abronal exports store payment dates as US month-first strings, often
+# with a quirky time suffix like "08/19/2026 2:28:PM". SoT rows tend to
+# be ISO ("2026-08-19 00:00:00"). SQLite's date() only understands ISO,
+# so every range filter goes through parse_date() → YYYY-MM-DD.
 
-def normalize_date_to_iso(value) -> str | None:
-    """Normalize a date-like value to SQLite-safe ISO YYYY-MM-DD.
+_DATE_TIME_SUFFIX = re.compile(
+    r"[T\s]+\d{1,2}:\d{2}"
+    r"(?::\d{2})?"          # optional seconds
+    r"(?::?\s*[AaPp][Mm])?"  # "PM", " PM", or Abronal's ":PM"
+    r"$"
+)
 
-    Handles the common source formats used in the app: ISO dates, day-first
-    dd/mm/yyyy values, and date strings with a trailing time like hh:mm or
-    hh:mm:ss (with or without AM/PM). A value that cannot be parsed is safely
-    ignored by the date filter rather than causing a hard failure.
+# Ambiguous slash/dash/dot dates (mm/dd/yyyy) — Abronal's native shape.
+_REGEX_A_MDY = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$")
+# ISO-ish year-first dates (yyyy-mm-dd / yyyy/mm/dd).
+_REGEX_B_YMD = re.compile(r"^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$")
+# Day-first fallback when month-first is impossible (e.g. 20/08/2026).
+_REGEX_C_DMY = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$")
+
+
+def parse_date(value) -> str | None:
+    """Parse any common date string into comparable ISO YYYY-MM-DD.
+
+    Standard interpretation for ambiguous numeric dates is mm/dd/yyyy
+    (Abronal / US). Trailing times are stripped first. Returns None when
+    the value cannot be parsed (those rows are excluded from range
+    filters rather than raising).
     """
     if value is None:
         return None
+    if isinstance(value, _date) and not isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
     s = str(value).strip()
     if not s or s.lower() in ("nan", "none", "nat"):
         return None
 
-    # Strip time suffixes in either space-delimited or ISO-with-T forms.
-    s = re.sub(r"[T\s]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?$", "", s)
+    s = _DATE_TIME_SUFFIX.sub("", s).strip()
 
-    # Common date shapes seen in scraped exports and browser inputs.
-    patterns = [
-        (r"^(\d{4})-(\d{1,2})-(\d{1,2})$", lambda y, mo, d: (_date(int(y), int(mo), int(d)).isoformat())),
-        (r"^(\d{4})/(\d{1,2})/(\d{1,2})$", lambda y, mo, d: (_date(int(y), int(mo), int(d)).isoformat())),
-        (r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$", lambda d, mo, y: (_date(int(y), int(mo), int(d)).isoformat())),
-        (r"^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$", lambda y, mo, d: (_date(int(y), int(mo), int(d)).isoformat())),
-    ]
-
-    for pattern, parser in patterns:
-        m = re.match(pattern, s)
-        if not m:
-            continue
+    # regex_b — year-first (ISO / SoT / <input type=date>)
+    m = _REGEX_B_YMD.match(s)
+    if m:
+        y, mo, d = m.groups()
         try:
-            return parser(*m.groups())
+            return _date(int(y), int(mo), int(d)).isoformat()
         except ValueError:
-            continue
+            pass
+
+    # regex_a — month-first mm/dd/yyyy (Abronal standard)
+    m = _REGEX_A_MDY.match(s)
+    if m:
+        mo, d, y = m.groups()
+        try:
+            return _date(int(y), int(mo), int(d)).isoformat()
+        except ValueError:
+            # regex_c — day-first only when month-first is impossible
+            try:
+                return _date(int(y), int(d), int(mo)).isoformat()
+            except ValueError:
+                pass
 
     return None
+
+
+# Back-compat alias used across the pipeline / review adapter.
+normalize_date_to_iso = parse_date
+
+
+def list_date_columns(table: str) -> list[str]:
+    """Return columns on `table` whose names look like dates."""
+    return [
+        c for c in table_columns(table)
+        if re.search(r"date|time|_at$", c, flags=re.I)
+    ]
+
+
+def resolve_date_column(table: str, preferred: str | None = None) -> str | None:
+    """Pick the column used for date-range filters.
+
+    If an explicit preferred column is valid, use it. When a table has
+    more than one date-like column, prefer payment_date (or a mapped
+    payment alias). Otherwise use the sole available date column / the
+    TABLE_DATE_COLUMNS default.
+    """
+    if table not in TABLES and table != "reports":
+        return preferred
+    cols = set(table_columns(table)) if table in TABLES or table == "reports" else set()
+    if preferred and preferred in cols:
+        return preferred
+
+    mapped = TABLE_DATE_COLUMNS.get(table)
+    if mapped and mapped in cols:
+        return mapped
+
+    date_cols = list_date_columns(table) if cols else []
+    if not date_cols:
+        return mapped
+
+    if len(date_cols) > 1:
+        for name in ("payment_date", "abronal_payment_date", "transaction_date", "sot_payment_date"):
+            if name in date_cols:
+                return name
+    return date_cols[0]
+
+
+def filter_date(table: str, start: str | None, end: str | None,
+                date_column: str | None = None) -> tuple[str, list]:
+    """Build a WHERE fragment for an inclusive start–end date range.
+
+    Dates are parsed to ISO via parse_date(); the resolved payment/date
+    column is compared with norm_date() so mixed stored formats still match.
+    """
+    if not (start or end):
+        return "", []
+    column = resolve_date_column(table, date_column)
+    if not column:
+        return "", []
+
+    clauses, params = [], []
+    if start:
+        norm_start = parse_date(start)
+        clauses.append(f'norm_date("{column}") >= ?')
+        params.append(norm_start or start)
+    if end:
+        norm_end = parse_date(end)
+        clauses.append(f'norm_date("{column}") <= ?')
+        params.append(norm_end or end)
+    return " AND ".join(clauses), params
 
 
 @contextmanager
@@ -97,7 +177,7 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.create_function("norm_date", 1, normalize_date_to_iso)
+    conn.create_function("norm_date", 1, parse_date)
     try:
         yield conn
         conn.commit()
@@ -527,11 +607,29 @@ def find_row_id(conn: sqlite3.Connection, table: str, predicate: dict[str, objec
 
 
 def table_columns(table: str) -> list[str]:
+    if table == "reports":
+        with get_conn() as conn:
+            rows = conn.execute("PRAGMA table_info(reports)").fetchall()
+        return [r["name"] for r in rows]
     if table not in TABLES:
         raise ValueError(f"Unknown table: {table}")
     with get_conn() as conn:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return [r["name"] for r in rows]
+
+
+def _date_expr_for_table(table: str, date_column: str | None = None) -> str | None:
+    """SQL expression that yields a comparable date for the table."""
+    col = resolve_date_column(table, date_column)
+    if not col:
+        return None
+    # unmatched rows may only carry a SoT date.
+    if table == "unmatched_records":
+        return (
+            'norm_date(COALESCE(NULLIF("abronal_payment_date", \'\'), '
+            'NULLIF("sot_payment_date", \'\')))'
+        )
+    return f'norm_date("{col}")'
 
 
 def _build_where(table: str | None = None, filters: dict | None = None,
@@ -549,22 +647,16 @@ def _build_where(table: str | None = None, filters: dict | None = None,
             escaped = str(val).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{escaped}%")
 
-    resolved_date_column = date_column or (TABLE_DATE_COLUMNS.get(table) if table else None)
-    if resolved_date_column and (start_date or end_date):
-        # Use the table's actual payment date column rather than whichever
-        # date-like column happens to be first in a result set. Compare
-        # against normalized ISO dates so the filter works even when
-        # cells are stored as dd/mm/yyyy, dd/mm/yyyy hh:mm, or ISO
-        # strings; inclusive >=/<= continues to match every record in the
-        # requested window, including gaps between dates.
-        if start_date:
-            norm_start = normalize_date_to_iso(start_date)
-            clauses.append(f'norm_date("{resolved_date_column}") >= ?')
-            params.append(norm_start or start_date)
-        if end_date:
-            norm_end = normalize_date_to_iso(end_date)
-            clauses.append(f'norm_date("{resolved_date_column}") <= ?')
-            params.append(norm_end or end_date)
+    if table and (start_date or end_date):
+        expr = _date_expr_for_table(table, date_column)
+        if expr:
+            if start_date:
+                clauses.append(f"{expr} >= ?")
+                params.append(parse_date(start_date) or start_date)
+            if end_date:
+                clauses.append(f"{expr} <= ?")
+                params.append(parse_date(end_date) or end_date)
+
     if not clauses:
         return "", []
     return " WHERE " + " AND ".join(clauses), params
@@ -641,6 +733,126 @@ def fetch_distinct(table: str, column: str, limit: int = 1000) -> list:
             f'WHERE "{column}" IS NOT NULL AND "{column}" != "" '
             f'ORDER BY "{column}" LIMIT ?',
             (limit,),
+        ).fetchall()
+    return [r["v"] for r in rows]
+
+
+# ── Accountant report snapshots ───────────────────────────────────
+
+def insert_report_snapshot(
+    user: dict,
+    rows: list[dict],
+    *,
+    physician_filter: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """Insert the currently filtered condensed table, ordered by payment date."""
+    submission_id = new_batch_id()
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    submitted_by = user.get("user_id")
+    submitted_by_name = user.get("username") or ""
+
+    def sort_key(row: dict) -> str:
+        return normalize_date_to_iso(row.get("payment_date")) or "9999-99-99"
+
+    ordered = sorted(rows, key=sort_key)
+    with get_conn() as conn:
+        for row in ordered:
+            conn.execute(
+                """INSERT INTO reports
+                   (submission_id, submitted_by, submitted_by_name, submitted_at,
+                    match_id, physician_id, physician_name, patient_name, service_id,
+                    total_amount, net_amount, payment_date, match_type, confidence,
+                    user_flagged_mismatch, user_flag_reason,
+                    filter_physician, filter_start_date, filter_end_date)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    submission_id, submitted_by, submitted_by_name, submitted_at,
+                    row.get("match_id"), row.get("physician_id"),
+                    row.get("physician_name") or "", row.get("patient_name") or "",
+                    row.get("service_id"),
+                    float(row.get("total_amount") or 0), float(row.get("net_amount") or 0),
+                    row.get("payment_date"), row.get("match_type"), row.get("confidence"),
+                    1 if row.get("user_flagged_mismatch") in (1, True, "1") else 0,
+                    row.get("user_flag_reason"),
+                    physician_filter or None, start_date or None, end_date or None,
+                ),
+            )
+    return {
+        "submission_id": submission_id,
+        "row_count": len(ordered),
+        "submitted_at": submitted_at,
+    }
+
+
+def fetch_reports(
+    physician_name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    submission_id: str | None = None,
+    limit: int = 5000,
+    offset: int = 0,
+) -> list[dict]:
+    filters: dict = {}
+    if physician_name:
+        filters["physician_name"] = physician_name
+    if submission_id:
+        filters["submission_id"] = submission_id
+    where, params = _build_where("reports", filters or None, "payment_date", start_date, end_date)
+    order_sql = (
+        'ORDER BY (norm_date("payment_date") IS NULL) ASC, '
+        'norm_date("payment_date") ASC, '
+        '"physician_name" COLLATE NOCASE ASC, '
+        '"patient_name" COLLATE NOCASE ASC, "report_row_id" ASC'
+    )
+    query = f"SELECT * FROM reports{where} {order_sql} LIMIT ? OFFSET ?"
+    with get_conn() as conn:
+        rows = conn.execute(query, params + [int(limit), int(offset)]).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_reports(
+    physician_name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    submission_id: str | None = None,
+) -> int:
+    filters: dict = {}
+    if physician_name:
+        filters["physician_name"] = physician_name
+    if submission_id:
+        filters["submission_id"] = submission_id
+    where, params = _build_where("reports", filters or None, "payment_date", start_date, end_date)
+    with get_conn() as conn:
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM reports{where}", params).fetchone()
+    return row["c"] if row else 0
+
+
+def list_report_submissions(limit: int = 100) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT submission_id, submitted_by_name, MIN(submitted_at) AS submitted_at,
+                      COUNT(*) AS row_count,
+                      MIN(filter_physician) AS filter_physician,
+                      MIN(filter_start_date) AS filter_start_date,
+                      MIN(filter_end_date) AS filter_end_date
+               FROM reports
+               GROUP BY submission_id
+               ORDER BY submitted_at DESC
+               LIMIT ?""",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def distinct_report_physicians(limit: int = 1000) -> list:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT physician_name AS v FROM reports
+               WHERE physician_name IS NOT NULL AND physician_name != ''
+               ORDER BY physician_name COLLATE NOCASE LIMIT ?""",
+            (int(limit),),
         ).fetchall()
     return [r["v"] for r in rows]
 

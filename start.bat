@@ -1,43 +1,49 @@
 @echo off
-REM start.bat — launch the Reconciliation Console and expose it on the LAN.
+REM start.bat — launch the Reconciliation Console on the LAN.
 REM
 REM Usage:
-REM   start.bat           # defaults: port 8000, auto-detects LAN IP
-REM   set PORT=9000 && start.bat  # use a different port
+REM   start.bat                 # opens a permanent titled log console window
+REM   start.bat --inline        # run in the current terminal (no new window)
+REM   set RELOAD=1 && start.bat # development auto-reload (also opens a window
+REM                             # unless --inline is passed)
 
 setlocal EnableDelayedExpansion
 
-REM Default port if not set
-if "%PORT%"=="" set PORT=8000
+REM Default: permanently open a dedicated log console so uvicorn output stays
+REM visible after boot/crash. Pass --inline to keep using this terminal.
+if /I "%~1"=="--inline" goto :run
+start "Reconciliation Console" cmd /k "%~f0" --inline
+exit /b 0
 
-REM Get the directory where this script lives
+:run
+if "%PORT%"=="" set PORT=8000
+if "%HOST%"=="" set HOST=0.0.0.0
+if "%STATIC_IP%"=="" set STATIC_IP=192.168.1.2
+
 set "APP_DIR=%~dp0"
 cd /d "%APP_DIR%"
+title Reconciliation Console
 
-REM Activate venv if it exists
 if exist "%APP_DIR%venv\Scripts\activate.bat" (
     call "%APP_DIR%venv\Scripts\activate.bat"
-)
-
-REM Get LAN IP address
-set "LAN_IP="
-for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
-    for /f "tokens=1" %%b in ("%%a") do (
-        if "!LAN_IP!"=="" set "LAN_IP=%%b"
-    )
 )
 
 echo.
 echo ==================================================
 echo   Reconciliation Console
 echo   Local:   http://localhost:%PORT%
-if not "%LAN_IP%"=="" (
-    echo   Network: http://%LAN_IP%:%PORT%  ^<- share this with other PCs
-)
+echo   Network: http://%STATIC_IP%:%PORT%
 echo ==================================================
 echo.
+echo Log window stays open after the process stops.
+echo.
 
-REM Start the server
-uvicorn backend.main:app --host 0.0.0.0 --port %PORT% --reload
+if "%RELOAD%"=="1" (
+    uvicorn backend.main:app --host %HOST% --port %PORT% --reload
+) else (
+    uvicorn backend.main:app --host %HOST% --port %PORT%
+)
 
+echo.
+echo Server stopped. Close this window when finished.
 endlocal

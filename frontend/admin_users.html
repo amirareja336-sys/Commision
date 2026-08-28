@@ -188,7 +188,7 @@ document.getElementById('createUserBtn').addEventListener('click', async () => {
   const res = await fetch('/api/auth/me');
   const data = await res.json();
   if (!data.authenticated) { window.location.href = '/login'; return; }
-  if (data.role !== 'admin') { window.location.href = '/'; return; }
+  if (data.role !== 'admin') { window.location.href = '/report'; return; }
   currentUsername = data.username;
   const chip = document.getElementById('userChip');
   chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;

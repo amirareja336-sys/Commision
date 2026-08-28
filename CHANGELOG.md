@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.14 — User role: Report only
+
+**Changed**
+- **`user` accounts no longer see Intake & Run or Evaluation.** After login they land on `/report` only. Hitting `/` or `/evaluation` redirects them there. Pipeline upload/run and Abronal scrape APIs are admin-only.
+- Admin nav/pages unchanged (Intake, Evaluation, Admin).
+
+## v0.13 — Permanent Windows log console
+
+**Added**
+- **`start.bat` opens a permanent titled log console** (`Reconciliation Console`) so uvicorn output stays visible after launch, crash, or stop. Autostart uses the same path. Pass `start.bat --inline` to keep logs in the current terminal instead.
+
+## v0.12 — Date-range filter fix (mm/dd/yyyy + Abronal time suffixes)
+
+**Fixed**
+- **Evaluation / Report date filters were matching almost nothing.** Abronal payment dates are stored as US month-first values with a quirky time suffix (`08/19/2026 2:28:PM`). The old parser assumed day-first dates and did not strip `:PM`, so `norm_date()` returned `NULL` for nearly every Abronal/matched row and the range filter looked broken (scraping still worked because it uses ISO `<input type=date>` values).
+- New `parse_date()` / `filter_date()` / `resolve_date_column()` in `db_manager.py`: strip Abronal-style times, interpret ambiguous slash dates as **mm/dd/yyyy**, fall back to day-first only when month-first is impossible, keep ISO for SQL comparison, and prefer `payment_date` when a table has multiple date columns.
+
+## v0.11 — User Report page and admin View Reports
+
+**Added**
+- **Report page for `user` accounts** (`/report`). Uses the condensed matched-records adapter as its data source, with physician-name and date-range as the main filters. **Send Report** writes the currently filtered view into a `reports` table (created automatically), rows inserted in payment-date order.
+- **View Reports admin module** (`/admin/reports`). Admins can load submitted snapshots, pick a submission, and filter by the same physician name and date range.
+- `reports` table stores each send as a `submission_id` batch (who sent it, when, the condensed columns, and the filters used). Not listed on the Evaluation page.
+
+**Changed**
+- User nav shows a Report tab; admin hub gains a View Reports tile. Admins hitting `/report` are redirected to `/admin/reports`.
+
+## v0.10 — Accountant review view for matched records
+
+**Added**
+- **Condensed `matched_records` view for `user` accounts.** When a non-admin opens `matched_records`, the table is passed through a review adapter (`db/matched_review_adapter.py`) that keeps only the accountant-facing columns (`match_id`, `physician_id`, `physician_name`, `patient_name`, `service_id`, `total_amount`, `net_amount`, `match_type`, `confidence`, `user_flagged_mismatch`, `user_flag_reason`) and then merges rows that share the same patient, physician, and service category. `service_id` is rewritten to the category name (Laboratory, X-ray, …) and amounts are summed. Admins still see the raw per-service matched table.
+- **Volatile JSON cache in `temp/`.** The condensed table is not written to SQLite. It is rebuilt from `matched_records` + `dictionary.json` / `service_prices` and stored as `temp/matched_review.json`, invalidated after a pipeline run or a flag change (and whenever `commissions.db` is newer than the cache).
+- Flagging a condensed row flags every underlying `match_id` that was merged into it. Excel export for `user` accounts uses the same condensed view, with flagged rows still highlighted red.
+
+**Changed**
+- `backend/routers/tables.py` / `export.py` — `user`-role reads of `matched_records` go through the review adapter; date filters still apply to each source row's payment date before merging, so a date range returns that period's condensed totals including gaps.
+- `backend/routers/pipeline.py` — clears the review cache when a run finishes.
+- `frontend/evaluation.html` — Evaluation defaults to `matched_records` when that table is in the caller's allow-list (typical for `user` accounts).
+
 ## v0.9 — User mismatch flagging, physician name on all tables, Windows support
 
 **Added**

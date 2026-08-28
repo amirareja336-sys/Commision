@@ -17,7 +17,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 import db_manager as dbm  # noqa: E402
 import auth  # noqa: E402
 
-from routers import pipeline, tables, export, scraper, auth_router, admin  # noqa: E402
+from routers import pipeline, tables, export, scraper, auth_router, admin, reports  # noqa: E402
 
 app = FastAPI(title="Reconciliation Console")
 
@@ -34,6 +34,7 @@ app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(scraper.router, prefix="/api/scraper", tags=["scraper"])
 app.include_router(tables.router, prefix="/api/tables", tags=["tables"])
 app.include_router(export.router, prefix="/api/export", tags=["export"])
+app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 
 
 @app.on_event("startup")
@@ -55,23 +56,44 @@ def _current_session(request: Request) -> dict | None:
 
 @app.get("/login")
 def login_page(request: Request):
-    if _current_session(request):
-        return RedirectResponse("/")
+    session = _current_session(request)
+    if session:
+        return RedirectResponse(_home_for_role(session["role"]))
     return FileResponse(FRONTEND_DIR / "login.html")
+
+
+def _home_for_role(role: str) -> str:
+    return "/report" if role == "user" else "/"
 
 
 @app.get("/")
 def index(request: Request):
-    if not _current_session(request):
+    session = _current_session(request)
+    if not session:
         return RedirectResponse("/login")
+    if session["role"] == "user":
+        return RedirectResponse("/report")
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/evaluation")
 def evaluation(request: Request):
-    if not _current_session(request):
+    session = _current_session(request)
+    if not session:
         return RedirectResponse("/login")
+    if session["role"] == "user":
+        return RedirectResponse("/report")
     return FileResponse(FRONTEND_DIR / "evaluation.html")
+
+
+@app.get("/report")
+def report_page(request: Request):
+    session = _current_session(request)
+    if not session:
+        return RedirectResponse("/login")
+    if session["role"] == "admin":
+        return RedirectResponse("/admin/reports")
+    return FileResponse(FRONTEND_DIR / "report.html")
 
 
 def _admin_page(request: Request, filename: str):
@@ -79,7 +101,7 @@ def _admin_page(request: Request, filename: str):
     if not session:
         return RedirectResponse("/login")
     if session["role"] != "admin":
-        return RedirectResponse("/")
+        return RedirectResponse(_home_for_role(session["role"]))
     return FileResponse(FRONTEND_DIR / filename)
 
 
@@ -106,3 +128,8 @@ def admin_categories_page(request: Request):
 @app.get("/admin/commission-calculator")
 def admin_commission_calculator_page(request: Request):
     return _admin_page(request, "admin_commission_calculator.html")
+
+
+@app.get("/admin/reports")
+def admin_reports_page(request: Request):
+    return _admin_page(request, "admin_reports.html")

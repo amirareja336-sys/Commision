@@ -144,3 +144,37 @@ def calculate_commission(
     if result is None:
         raise HTTPException(status_code=404, detail="Physician not found")
     return result
+
+
+# ── Submitted accountant reports ─────────────────────────────────
+
+@router.get("/reports/submissions")
+def report_submissions():
+    return {"submissions": dbm.list_report_submissions()}
+
+
+@router.get("/reports/physicians")
+def report_physicians():
+    return {"values": dbm.distinct_report_physicians()}
+
+
+@router.get("/reports")
+def view_reports(
+    physician_name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    submission_id: str | None = None,
+):
+    rows = dbm.fetch_reports(
+        physician_name=physician_name,
+        start_date=start_date,
+        end_date=end_date,
+        submission_id=submission_id,
+    )
+    total = dbm.count_reports(
+        physician_name=physician_name,
+        start_date=start_date,
+        end_date=end_date,
+        submission_id=submission_id,
+    )
+    return {"rows": rows, "total": total}

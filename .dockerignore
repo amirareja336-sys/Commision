@@ -8,6 +8,7 @@ db/commissions.db
 data/uploads/sot/*
 data/uploads/abronal/*
 exports/*.xlsx
+temp/
 
 # Python
 __pycache__/

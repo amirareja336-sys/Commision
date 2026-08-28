@@ -257,6 +257,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
   const res = await fetch('/api/auth/me');
   const data = await res.json();
   if (!data.authenticated) { window.location.href = '/login'; return; }
+  if (data.role === 'user') { window.location.href = '/report'; return; }
   document.querySelectorAll('nav.tabs a').forEach(a => {
     a.classList.toggle('active', a.getAttribute('href') === '/');
   });

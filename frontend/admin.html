@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Reconciliation Console — Admin</title>
-<!-- <link rel="stylesheet" href="/static/style.css?v=7"> -->
+<link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
 <header class="masthead">
@@ -39,6 +39,10 @@
         <div class="tile-title">Commission Calculator</div>
         <div class="tile-desc">Select a physician and date range to see a full category breakdown of their total commission.</div>
       </a>
+      <a class="admin-tile" href="/admin/reports">
+        <div class="tile-title">View Reports</div>
+        <div class="tile-desc">Open accountant report snapshots sent from the Report page, filtered by physician and date range.</div>
+      </a>
     </div>
   </div>
 </main>
@@ -48,7 +52,7 @@
   const res = await fetch('/api/auth/me');
   const data = await res.json();
   if (!data.authenticated) { window.location.href = '/login'; return; }
-  if (data.role !== 'admin') { window.location.href = '/'; return; }
+  if (data.role !== 'admin') { window.location.href = '/report'; return; }
   const chip = document.getElementById('userChip');
   chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
   document.getElementById('logoutBtn').addEventListener('click', async () => {

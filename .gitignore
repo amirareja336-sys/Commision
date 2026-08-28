@@ -9,3 +9,4 @@ test_db_manager.py
 *.png
 *.pyc
 data/scraper_debug/
+temp/

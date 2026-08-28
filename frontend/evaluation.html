@@ -71,6 +71,7 @@ let currentTable = null;
 let currentColumns = [];
 let currentOffset = 0;
 let currentTotal = 0;
+let dateColumnsByTable = {};
 const combos = {};   // column -> { input, panel, selected, label }
 
 const tableSelect = document.getElementById('tableSelect');
@@ -83,10 +84,18 @@ const thead = document.querySelector('#dataTable thead tr');
 const tbody = document.querySelector('#dataTable tbody');
 
 async function loadTableList() {
-  const res = await fetch(`${API}/tables/list`);
-  const data = await res.json();
+  const [tablesRes, dateRes] = await Promise.all([
+    fetch(`${API}/tables/list`),
+    fetch(`${API}/tables/date-columns`),
+  ]);
+  const data = await tablesRes.json();
+  const dateData = await dateRes.json();
+  dateColumnsByTable = dateData.date_columns || {};
   tableSelect.innerHTML = data.tables.map(t => `<option value="${t}">${t}</option>`).join('');
-  tableSelect.value = 'commission_per_physicians';
+  const preferred = data.tables.includes('matched_records')
+    ? 'matched_records'
+    : (data.tables.includes('commission_per_physicians') ? 'commission_per_physicians' : data.tables[0]);
+  if (preferred) tableSelect.value = preferred;
   await loadTable();
 }
 tableSelect.addEventListener('change', loadTable);
@@ -204,6 +213,8 @@ async function fetchAndRender() {
   const start = document.getElementById('startDate').value;
   const end = document.getElementById('endDate').value;
   if (start || end) {
+    const dateCol = dateColumnsByTable[currentTable];
+    if (dateCol) params.set('date_column', dateCol);
     if (start) params.set('start_date', start);
     if (end) params.set('end_date', end);
   }
@@ -338,6 +349,7 @@ loadTableList();
   const res = await fetch('/api/auth/me');
   const data = await res.json();
   if (!data.authenticated) { window.location.href = '/login'; return; }
+  if (data.role === 'user') { window.location.href = '/report'; return; }
   document.querySelectorAll('nav.tabs a').forEach(a => {
     a.classList.toggle('active', a.getAttribute('href') === '/evaluation');
   });

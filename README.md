@@ -97,33 +97,40 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Then open `http://localhost:8000` — you'll be redirected to `/login`.
-Other PCs on the same network can reach the app at `http://<this-machine-IP>:8000`
-(find your IP with `ip addr` on Linux or `ipconfig` on Windows).
+On this clinic PC the console is meant to live at **http://192.168.1.2:8000**.
 
 ## Quick Start Scripts
 
-For convenience, use the provided startup scripts that activate the venv (if present),
-display local and LAN URLs, and launch the server:
-
 **Linux / macOS:**
 ```bash
-./start.sh                # default port 8000
-PORT=9000 ./start.sh      # use a different port
+./start.sh
 ```
 
 **Windows:**
 ```cmd
-start.bat                 # default port 8000
-set PORT=9000 && start.bat   # use a different port
+start.bat
 ```
 
-Both scripts auto-detect your LAN IP and display it so you can share with other PCs.
+Opens a permanent titled **Reconciliation Console** window with live uvicorn
+logs (window stays open after the process stops so you can read errors).
+Use `start.bat --inline` to run in the current terminal instead.
+
+The server listens on all interfaces at port 8000. Other PCs on the LAN
+should use `http://192.168.1.2:8000`.
+
+**Run at Windows startup:**
+Right-click `install-autostart.bat` and choose **Run as administrator**.
+That script leaves Ethernet at `192.168.1.2`, opens firewall port 8000, and
+registers a scheduled task that launches the console 30 seconds after boot.
+A permanent log console window opens at boot with server output.
+A user must be logged in (or use Windows auto-logon) for the task to start
+the server.
 
 **First run creates a default admin account automatically** and prints its
 random password once to the server console (search the startup log for
 "Created a default admin account"); log in with it and change the password
-immediately from Admin -> Users. From there: `/evaluation` (Evaluation) and
-`/admin` (Admin, admin role only).
+immediately from Admin -> Users. From there: admins use `/` (Intake) and
+`/evaluation`; users are sent to `/report`.
 
 `.env` holds real login credentials — never commit it. If `.env` is missing
 or incomplete, the "Fetch from Abronal" panel will say so and any fetch
@@ -137,16 +144,13 @@ below to avoid storing that password in plaintext.
 Every page and API endpoint requires being logged in (`backend/auth.py`,
 simple httponly-cookie sessions — no external auth service). Two roles:
 
-- **admin** — full access: every table on the Evaluation page, every admin
-  page, and the only role that can trigger an Abronal fetch (it uses stored
-  login credentials, so it's treated as an operational action rather than
-  a plain read).
-- **user** — restricted by default to `abronal_mirror`, `sot_mirror`,
-  `matched_records`, and `unmatched_records` on the Evaluation page (no
-  `physicians`, `service_prices`, or `commission_per_physicians` unless an
-  admin grants it). An admin can customize exactly which tables any
-  individual user can see from Admin -> Users -> "Manage access" — the
-  restriction is per-user, not fixed to the role.
+- **admin** — full access: Intake & Run, Evaluation, every admin page, and
+  the only role that can upload files, run reconciliation, or trigger an
+  Abronal fetch.
+- **user** — Report page only (`/report`). No Intake & Run and no Evaluation.
+  After login they land on the accountant report over condensed matched
+  records; they can filter and **Send Report** to admin. Pipeline, scrape,
+  and upload APIs are admin-only.
 
 Passwords are hashed with PBKDF2-HMAC-SHA256 (200,000 iterations, random
 per-user salt) via stdlib `hashlib` — nothing sent or stored in plaintext.
@@ -236,7 +240,7 @@ handles both problems so `primary_reconciliation.py` never has to guess:
    key) so the Evaluation page — and anyone exporting this table — doesn't
    need to join back to `physicians` just to see whose commission it is.
 
-## Evaluation page
+## Evaluation page (admin)
 
 Every filterable column (physician name, patient name, service, category,
 status, etc.) uses one combined control instead of a plain text box or a
@@ -246,6 +250,21 @@ listed (fetched live from the database via `GET
 to matches, the same way a search box would. Selecting a value — or typing
 a partial term and applying — filters the table with a `LIKE` match
 server-side, so a typed fragment works just as well as a picked option.
+
+Admins see the raw per-service `matched_records` table (and any other
+tables they open). Table access for accounts is still managed under
+Admin → Users → "Manage access".
+
+## Report page (user)
+
+`/report` is the only dashboard for `user` accounts. It uses the condensed
+matched-records adapter (`temp/matched_review.json`): extra source columns
+are dropped, and rows that share the same patient, physician, and service
+category are merged with `service_id` rewritten to the category name and
+amounts summed. Filter by physician and date range, then **Send Report** to
+insert the current view into the `reports` table. Admins open those
+snapshots from Admin → View Reports, with the same physician and date-range
+filters.
 
 ## Upgrading an existing database
 

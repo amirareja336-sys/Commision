@@ -36,7 +36,7 @@ class ScrapeRequest(BaseModel):
 
 
 @router.get("/config-check")
-def config_check(user=Depends(auth.require_user)):
+def config_check(user=Depends(auth.require_admin)):
     return {"configured": abronal_scraper.ScraperConfig.has_credentials()}
 
 
@@ -67,7 +67,7 @@ async def run_scrape(req: ScrapeRequest, user=Depends(auth.require_admin)):
 
 
 @router.get("/log/{batch_id}")
-def get_log(batch_id: str, user=Depends(auth.require_user)):
+def get_log(batch_id: str, user=Depends(auth.require_admin)):
     return {"lines": RUN_LOGS.get(batch_id, [])}
 
 

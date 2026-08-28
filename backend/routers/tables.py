@@ -10,6 +10,7 @@ sys.path.insert(0, str(APP_ROOT / "db"))
 sys.path.insert(0, str(APP_ROOT / "backend"))
 import db_manager as dbm  # noqa: E402
 import auth  # noqa: E402
+import matched_review_adapter as review  # noqa: E402
 
 router = APIRouter(dependencies=[Depends(auth.require_user)])
 
@@ -20,12 +21,18 @@ def _check_table_access(table: str, user: dict) -> None:
         raise HTTPException(status_code=403, detail=f"You don't have access to '{table}'")
 
 
+def _use_review_view(table: str, user: dict) -> bool:
+    return table == "matched_records" and user.get("role") == "user"
+
+
 @router.get("/date-columns")
 def date_columns(user=Depends(auth.require_user)):
     allowed = set(dbm.get_user_allowed_tables(user["user_id"], user["role"]))
     return {
         "date_columns": {
-            table: col for table, col in dbm.TABLE_DATE_COLUMNS.items() if table in allowed
+            table: dbm.resolve_date_column(table)
+            for table in allowed
+            if dbm.resolve_date_column(table)
         }
     }
 
@@ -38,6 +45,8 @@ def list_tables(user=Depends(auth.require_user)):
 @router.get("/{table}/columns")
 def columns(table: str, user=Depends(auth.require_user)):
     _check_table_access(table, user)
+    if _use_review_view(table, user):
+        return {"columns": list(review.REVIEW_COLUMNS)}
     return {"columns": dbm.table_columns(table)}
 
 
@@ -57,6 +66,11 @@ def get_table(table: str, request: Request, limit: int = Query(1000, le=1000),
     reserved = {"limit", "offset", "date_column", "start_date", "end_date"}
     filters = {k: v for k, v in request.query_params.items() if k not in reserved}
     filters = filters or None
+    if _use_review_view(table, user):
+        rows = review.fetch_review(filters=filters, limit=limit, offset=offset,
+                                   start_date=start_date, end_date=end_date)
+        total = review.count_review(filters=filters, start_date=start_date, end_date=end_date)
+        return {"rows": rows, "total": total, "offset": offset, "limit": limit}
     rows = dbm.fetch_table(table, filters=filters, limit=limit, offset=offset,
                             date_column=date_column, start_date=start_date, end_date=end_date)
     total = dbm.count_table(table, filters=filters, date_column=date_column,
@@ -67,6 +81,11 @@ def get_table(table: str, request: Request, limit: int = Query(1000, le=1000),
 @router.get("/{table}/distinct/{column}")
 def distinct_values(table: str, column: str, user=Depends(auth.require_user)):
     _check_table_access(table, user)
+    if _use_review_view(table, user):
+        try:
+            return {"values": review.distinct_review(column)}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
     return {"values": dbm.fetch_distinct(table, column)}
 
 
@@ -74,6 +93,10 @@ def distinct_values(table: str, column: str, user=Depends(auth.require_user)):
 def filter_table(table: str, filters: dict, limit: int = 1000, offset: int = 0,
                   user=Depends(auth.require_user)):
     _check_table_access(table, user)
+    if _use_review_view(table, user):
+        rows = review.fetch_review(filters=filters, limit=limit, offset=offset)
+        total = review.count_review(filters=filters)
+        return {"rows": rows, "total": total, "offset": offset, "limit": limit}
     rows = dbm.fetch_table(table, filters=filters, limit=limit, offset=offset)
     total = dbm.count_table(table, filters=filters)
     return {"rows": rows, "total": total, "offset": offset, "limit": limit}
@@ -92,16 +115,21 @@ class FlagMismatchRequest(BaseModel):
 def flag_matched_record(match_id: int, req: FlagMismatchRequest, user=Depends(auth.require_user)):
     """Allow users to flag a matched record as a mismatch they found."""
     _check_table_access("matched_records", user)
+    ids = review.source_match_ids_for(match_id) if user.get("role") == "user" else [match_id]
+    flagged = 1 if req.flagged else 0
+    reason = req.reason if req.flagged else None
     with dbm.get_conn() as conn:
-        row = conn.execute(
-            "SELECT match_id FROM matched_records WHERE match_id = ?", (match_id,)
-        ).fetchone()
-        if not row:
+        existing = conn.execute(
+            f"SELECT match_id FROM matched_records WHERE match_id IN ({','.join('?' * len(ids))})",
+            ids,
+        ).fetchall()
+        if not existing:
             raise HTTPException(status_code=404, detail="Matched record not found")
-        conn.execute(
+        conn.executemany(
             """UPDATE matched_records
                SET user_flagged_mismatch = ?, user_flag_reason = ?
                WHERE match_id = ?""",
-            (1 if req.flagged else 0, req.reason if req.flagged else None, match_id),
+            [(flagged, reason, row_id) for row_id in ids],
         )
-    return {"ok": True, "match_id": match_id, "flagged": req.flagged}
+    review.invalidate_review_cache()
+    return {"ok": True, "match_id": match_id, "flagged": req.flagged, "updated_ids": ids}
