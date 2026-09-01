@@ -1,529 +1,57 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Reconciliation Console — Intake</title>
-<link rel="stylesheet" href="/static/style.css?v=7">
-</head>
-<body>
-<header class="masthead">
-  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
-  <div class="header-right">
-    <nav class="tabs">
-      <a href="/">Intake &amp; Run</a>
-      <a href="/evaluation">Evaluation</a>
-      <a href="/admin" id="adminTabLink" style="display:none;">Admin</a>
-    </nav>
-    <div class="user-chip" id="userChip"></div>
-  </div>
-</header>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Commission Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel">
+        <h1>Commission Export Control</h1>
+        <p>Use this form to send export dates and physician names to the PHP backend, avoiding the Tkinter date picker.</p>
 
-<main>
-  <div class="card" id="scrapeCard">
-    <h2>01 · Fetch from Abronal (optional, admin only)</h2>
-    <p class="meta-line">Pulls physician performance exports directly from Abronal for a date range and drops them into the Abronal upload slot below — no manual download needed. Requires credentials in <code>.env</code> (see README).</p>
-    <div class="filters-row">
-      <div class="field">
-        <label>From Date</label>
-        <input type="date" id="scrapeFrom">
-      </div>
-      <div class="field">
-        <label>To Date</label>
-        <input type="date" id="scrapeTo">
-      </div>
-      <div class="field">
-        <label>Physicians (optional, comma-separated)</label>
-        <input type="text" id="scrapePhysicians" placeholder="leave blank for all" style="width:260px;">
-      </div>
-      <div class="field">
-        <button id="scrapeBtn">Fetch from Abronal</button>
-      </div>
-    </div>
-    <div class="progress-wrap">
-      <div class="progress-bar"><div class="progress-fill" id="scrapeFill"></div></div>
-      <div class="progress-label" id="scrapeLabel">Idle — no fetch in progress.</div>
-    </div>
-    <div class="status-banner" id="scrapeBanner"></div>
-    <div class="log-window" id="scrapeLog" style="height:150px; margin-top:12px;">Waiting for a fetch…</div>
-  </div>
+        <form id="export-form" class="form">
+          <label>
+            From date
+            <input id="fromDate" type="date" required />
+          </label>
+          <label>
+            To date
+            <input id="toDate" type="date" required />
+          </label>
+          <label>
+            Physicians (comma-separated)
+            <input id="physicians" type="text" placeholder="Dr. Ahmed, Dr. Sara" />
+          </label>
+          <button id="submit-btn" type="submit">Start export</button>
+        </form>
 
-  <div class="grid-2">
-    <div class="card">
-      <h2>02 · Source of Truth Upload</h2>
-      <p class="meta-line">Drop the SoT .xlsx export(s) here. These are mirrored into <code>sot_mirror</code> before reconciliation.</p>
-      <div class="dropzone" id="sotZone">Drop SoT .xlsx files here, or click to browse</div>
-      <input type="file" id="sotInput" accept=".xlsx" multiple style="display:none">
-      <div class="filelist" id="sotList"></div>
-    </div>
+        <p id="status" class="status"></p>
 
-    <div class="card">
-      <h2>03 · Abronal Export Upload</h2>
-      <p class="meta-line">Physician name is read from each file's <em>name</em> </p>
-      <div class="dropzone" id="abrZone">Drop Abronal .xlsx files here, or click to browse</div>
-      <input type="file" id="abrInput" accept=".xlsx" multiple style="display:none">
-      <div class="filelist" id="abrList"></div>
-    </div>
-  </div>
+        <h3>Recent export log</h3>
+        <pre id="log-box" class="log-box">Loading...</pre>
+      </section>
 
-  <div class="card" id="newServicesCard" style="display:none;">
-    <h2>04 · Categorize new services</h2>
-    <p class="meta-line">These services appear in the current uploads but are not in <code>dictionary.json</code>. Assign a category for each before running reconciliation (otherwise they would be stored as Other).</p>
-    <div class="table-scroll" style="max-height:320px;">
-      <table id="newServicesTable">
-        <thead>
-          <tr><th>Service</th><th>Source</th><th>Category</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="actions">
-      <button id="saveCategoriesBtn">Save categories to dictionary</button>
-      <button id="refreshNewServicesBtn" class="secondary">Rescan uploads</button>
-    </div>
-    <div class="status-banner" id="newServicesBanner"></div>
-  </div>
+      <section class="panel">
+        <h2>Stored Records</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Doctor</th>
+              <th>Service</th>
+              <th>Amount</th>
+              <th>Category</th>
+            </tr>
+          </thead>
+          <tbody id="records-body">
+            <tr><td colspan="4">Loading...</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
 
-  <div class="card">
-    <h2>05 · Run Reconciliation Pipeline</h2>
-    <p class="meta-line">Runs, in order: <b>primary_reconciliation</b> → <b>secondary_name_matcher</b> → <b>category_merger</b>. Blocked until every new service above has a category.</p>
-    <div class="actions">
-      <button id="runBtn">Run Full Reconciliation</button>
-      <button id="refreshUploadsBtn" class="secondary">Refresh Uploaded File Lists</button>
-    </div>
-
-    <div class="progress-wrap">
-      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-      <div class="progress-label" id="progressLabel">Idle — no run in progress.</div>
-    </div>
-
-    <div class="status-banner" id="statusBanner"></div>
-  </div>
-
-  <div class="card">
-    <h2>06 · System Log</h2>
-    <div class="log-window" id="logWindow">Waiting for a run…</div>
-  </div>
-</main>
-
-<script>
-const API = "/api";
-
-function wireDropzone(zoneId, inputId, listId, endpoint) {
-  const zone = document.getElementById(zoneId);
-  const input = document.getElementById(inputId);
-  const list = document.getElementById(listId);
-
-  zone.addEventListener('click', () => input.click());
-  ['dragenter','dragover'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.add('drag'); }));
-  ['dragleave','drop'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.remove('drag'); }));
-  zone.addEventListener('drop', e => upload(e.dataTransfer.files));
-  input.addEventListener('change', e => upload(e.target.files));
-
-  async function upload(files) {
-    if (!files || !files.length) return;
-    const fd = new FormData();
-    for (const f of files) fd.append('files', f);
-    zone.textContent = 'Uploading…';
-    const res = await fetch(`${API}/pipeline/upload/${endpoint}`, { method: 'POST', body: fd });
-    const data = await res.json();
-    zone.textContent = `Drop more ${endpoint === 'sot' ? 'SoT' : 'Abronal'} .xlsx files here, or click to browse`;
-    refreshUploads();
-    refreshNewServices();
-  }
-}
-wireDropzone('sotZone', 'sotInput', 'sotList', 'sot');
-wireDropzone('abrZone', 'abrInput', 'abrList', 'abronal');
-
-const STEP_PROGRESS = {
-  'primary_reconciliation': 15,
-  'secondary_name_matcher': 55,
-  'category_merger': 80,
-};
-
-function wsUrl(path) {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${location.host}${path}`;
-}
-
-function saveIntakeUi() {
-  const state = {
-    scrapeFrom: document.getElementById('scrapeFrom').value,
-    scrapeTo: document.getElementById('scrapeTo').value,
-    scrapePhysicians: document.getElementById('scrapePhysicians').value,
-  };
-  fetch(`${API}/runtime/ui`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ page: 'intake', state }),
-  }).catch(() => {});
-}
-
-['scrapeFrom', 'scrapeTo', 'scrapePhysicians'].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) el.addEventListener('change', saveIntakeUi);
-});
-
-async function checkScraperConfig() {
-  const scrapeLabel = document.getElementById('scrapeLabel');
-  try {
-    const res = await fetch(`${API}/scraper/config-check`);
-    const data = await res.json();
-    if (!data.configured) {
-      scrapeLabel.textContent = 'Not configured — add BASE_URL / USERNAME / PASSWORD / ROLE to .env (see README).';
-    }
-  } catch (e) {
-    scrapeLabel.textContent = 'Could not reach scraper service.';
-  }
-}
-
-function applyScrapeLines(lines, { live } = { live: false }) {
-  const scrapeLog = document.getElementById('scrapeLog');
-  const scrapeFill = document.getElementById('scrapeFill');
-  const scrapeLabel = document.getElementById('scrapeLabel');
-  const scrapeBanner = document.getElementById('scrapeBanner');
-  const scrapeBtn = document.getElementById('scrapeBtn');
-  scrapeLog.textContent = '';
-  for (const line of lines) {
-    if (line.startsWith('SCRAPE_DONE::')) {
-      const success = line.endsWith('success');
-      scrapeFill.style.width = success ? '100%' : scrapeFill.style.width;
-      scrapeLabel.textContent = success ? 'Fetch complete.' : 'Fetch failed — see log.';
-      scrapeBanner.textContent = success
-        ? `Abronal export fetched successfully. Files are now in the Abronal upload list below.`
-        : `Fetch failed. Check the log window above for details.`;
-      scrapeBanner.className = 'status-banner show ' + (success ? 'success' : 'fail');
-      scrapeBtn.disabled = false;
-      if (!live) refreshUploads();
-      continue;
-    }
-    scrapeLog.textContent += line + '\n';
-    scrapeLabel.textContent = line;
-    if (line.startsWith('Launching')) scrapeFill.style.width = '10%';
-    if (line.startsWith('Logging in')) scrapeFill.style.width = '20%';
-    if (line.startsWith('Opening')) scrapeFill.style.width = '30%';
-    if (line.startsWith('Will export')) scrapeFill.style.width = '40%';
-    const m = line.match(/^\[(\d+)\/(\d+)\]/);
-    if (m) scrapeFill.style.width = (40 + (Number(m[1]) / Number(m[2])) * 55) + '%';
-  }
-  scrapeLog.scrollTop = scrapeLog.scrollHeight;
-}
-
-function watchScrape(batchId, { replayed } = { replayed: false }) {
-  const scrapeBtn = document.getElementById('scrapeBtn');
-  const scrapeLog = document.getElementById('scrapeLog');
-  const scrapeFill = document.getElementById('scrapeFill');
-  const scrapeLabel = document.getElementById('scrapeLabel');
-  const scrapeBanner = document.getElementById('scrapeBanner');
-  scrapeBtn.disabled = true;
-  if (!replayed) {
-    scrapeLog.textContent = '';
-    scrapeBanner.className = 'status-banner';
-    scrapeFill.style.width = '5%';
-    scrapeLabel.textContent = 'Starting fetch…';
-  }
-  const ws = new WebSocket(wsUrl(`/api/scraper/ws/${batchId}`));
-  let sawDone = false;
-  ws.onmessage = (evt) => {
-    const line = evt.data;
-    if (line.startsWith('SCRAPE_DONE::')) {
-      sawDone = true;
-      const success = line.endsWith('success');
-      scrapeFill.style.width = success ? '100%' : scrapeFill.style.width;
-      scrapeLabel.textContent = success ? 'Fetch complete.' : 'Fetch failed — see log.';
-      scrapeBanner.textContent = success
-        ? `Abronal export fetched successfully. Files are now in the Abronal upload list below.`
-        : `Fetch failed. Check the log window above for details.`;
-      scrapeBanner.className = 'status-banner show ' + (success ? 'success' : 'fail');
-      scrapeBtn.disabled = false;
-      ws.close();
-      refreshUploads();
-      refreshNewServices();
-      return;
-    }
-    scrapeLog.textContent += line + '\n';
-    scrapeLog.scrollTop = scrapeLog.scrollHeight;
-    scrapeLabel.textContent = line;
-    if (line.startsWith('Launching')) scrapeFill.style.width = '10%';
-    if (line.startsWith('Logging in')) scrapeFill.style.width = '20%';
-    if (line.startsWith('Opening')) scrapeFill.style.width = '30%';
-    if (line.startsWith('Will export')) scrapeFill.style.width = '40%';
-    const m = line.match(/^\[(\d+)\/(\d+)\]/);
-    if (m) scrapeFill.style.width = (40 + (Number(m[1]) / Number(m[2])) * 55) + '%';
-  };
-  ws.onerror = () => {
-    if (!sawDone) {
-      scrapeLabel.textContent = 'Connection lost — reopen Intake to resume log stream.';
-      scrapeBtn.disabled = false;
-    }
-  };
-}
-
-document.getElementById('scrapeBtn').addEventListener('click', async () => {
-  const fromDate = document.getElementById('scrapeFrom').value;
-  const toDate = document.getElementById('scrapeTo').value;
-  const physicansRaw = document.getElementById('scrapePhysicians').value.trim();
-  if (!fromDate || !toDate) {
-    alert('Pick a From and To date first.');
-    return;
-  }
-  saveIntakeUi();
-  const physicians = physicansRaw ? physicansRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
-  const res = await fetch(`${API}/scraper/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from_date: fromDate, to_date: toDate, physicians }),
-  });
-  const data = await res.json();
-  watchScrape(data.batch_id, { replayed: !!data.resumed });
-});
-
-function applyPipelineLines(lines) {
-  const logWindow = document.getElementById('logWindow');
-  const fill = document.getElementById('progressFill');
-  const label = document.getElementById('progressLabel');
-  const banner = document.getElementById('statusBanner');
-  const runBtn = document.getElementById('runBtn');
-  logWindow.textContent = '';
-  for (const line of lines) {
-    if (line.startsWith('PIPELINE_DONE::')) {
-      const success = line.endsWith('success');
-      fill.style.width = success ? '100%' : fill.style.width;
-      label.textContent = success ? 'Complete.' : 'Failed — see log.';
-      banner.textContent = success
-        ? `Reconciliation complete. Review results on the Evaluation page.`
-        : `Reconciliation failed. Check the log window above for details.`;
-      banner.className = 'status-banner show ' + (success ? 'success' : 'fail');
-      runBtn.disabled = false;
-      continue;
-    }
-    logWindow.textContent += line + '\n';
-    for (const [step, pct] of Object.entries(STEP_PROGRESS)) {
-      if (line.includes(step) || line.toLowerCase().includes(step.replace(/_/g, ' '))) {
-        fill.style.width = pct + '%';
-        label.textContent = line;
-      }
-    }
-    if (line.startsWith('STEP')) label.textContent = line;
-  }
-  logWindow.scrollTop = logWindow.scrollHeight;
-}
-
-function watchPipeline(batchId, { replayed } = { replayed: false }) {
-  const runBtn = document.getElementById('runBtn');
-  const logWindow = document.getElementById('logWindow');
-  const fill = document.getElementById('progressFill');
-  const label = document.getElementById('progressLabel');
-  const banner = document.getElementById('statusBanner');
-  runBtn.disabled = true;
-  if (!replayed) {
-    logWindow.textContent = '';
-    banner.className = 'status-banner';
-    fill.style.width = '2%';
-    label.textContent = 'Starting run…';
-  }
-  const ws = new WebSocket(wsUrl(`/api/pipeline/ws/${batchId}`));
-  let sawDone = false;
-  ws.onmessage = (evt) => {
-    const line = evt.data;
-    if (line.startsWith('PIPELINE_DONE::')) {
-      sawDone = true;
-      const success = line.endsWith('success');
-      fill.style.width = success ? '100%' : fill.style.width;
-      label.textContent = success ? 'Complete.' : 'Failed — see log.';
-      banner.textContent = success
-        ? `Reconciliation complete. Review results on the Evaluation page.`
-        : `Reconciliation failed. Check the log window above for details.`;
-      banner.className = 'status-banner show ' + (success ? 'success' : 'fail');
-      runBtn.disabled = false;
-      ws.close();
-      return;
-    }
-    logWindow.textContent += line + '\n';
-    logWindow.scrollTop = logWindow.scrollHeight;
-    for (const [step, pct] of Object.entries(STEP_PROGRESS)) {
-      if (line.includes(step) || line.toLowerCase().includes(step.replace(/_/g, ' '))) {
-        fill.style.width = pct + '%';
-        label.textContent = line;
-      }
-    }
-    if (line.startsWith('STEP')) label.textContent = line;
-  };
-  ws.onerror = () => {
-    if (!sawDone) {
-      label.textContent = 'Connection lost — reopen Intake to resume log stream.';
-      runBtn.disabled = false;
-    }
-  };
-}
-
-document.getElementById('runBtn').addEventListener('click', async () => {
-  const banner = document.getElementById('statusBanner');
-  const res = await fetch(`${API}/pipeline/run`, { method: 'POST' });
-  const data = await res.json();
-  if (res.status === 409) {
-    const detail = data.detail || {};
-    banner.className = 'status-banner show fail';
-    banner.textContent = detail.message || 'Categorize new services before running.';
-    await renderNewServices(detail);
-    document.getElementById('newServicesCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    return;
-  }
-  if (!res.ok) {
-    banner.className = 'status-banner show fail';
-    banner.textContent = data.detail || 'Failed to start pipeline.';
-    return;
-  }
-  watchPipeline(data.batch_id, { replayed: !!data.resumed });
-});
-
-async function refreshUploads() {
-  const res = await fetch(`${API}/pipeline/uploads`);
-  const data = await res.json();
-  document.getElementById('sotList').innerHTML = data.sot.map(n => `<div>${n}</div>`).join('') || '<div>(none uploaded yet)</div>';
-  document.getElementById('abrList').innerHTML = data.abronal.map(n => `<div>${n}</div>`).join('') || '<div>(none uploaded yet)</div>';
-}
-document.getElementById('refreshUploadsBtn').addEventListener('click', async () => {
-  await refreshUploads();
-  await refreshNewServices();
-});
-
-let lastCategories = [];
-
-async function renderNewServices(payload) {
-  const card = document.getElementById('newServicesCard');
-  const tbody = document.querySelector('#newServicesTable tbody');
-  const services = (payload && payload.new_services) || [];
-  const categories = (payload && payload.categories) || lastCategories;
-  lastCategories = categories;
-  if (!services.length) {
-    card.style.display = 'none';
-    tbody.innerHTML = '';
-    document.getElementById('runBtn').disabled = false;
-    return;
-  }
-  card.style.display = '';
-  document.getElementById('runBtn').disabled = true;
-  const opts = categories.map(c => `<option value="${c}">${c}</option>`).join('');
-  tbody.innerHTML = services.map((s, i) => {
-    const name = typeof s === 'string' ? s : s.service;
-    const sources = (s.sources || []).join(', ') || '—';
-    return `<tr>
-      <td>${name}</td>
-      <td style="color:var(--muted);font-size:12px;">${sources}</td>
-      <td><select class="new-svc-cat" data-service="${String(name).replace(/"/g, '&quot;')}">${opts}</select></td>
-    </tr>`;
-  }).join('');
-  // Default select to Other if present
-  tbody.querySelectorAll('select.new-svc-cat').forEach(sel => {
-    if ([...sel.options].some(o => o.value === 'Other')) sel.value = 'Other';
-  });
-}
-
-async function refreshNewServices() {
-  try {
-    const res = await fetch(`${API}/pipeline/new-services`);
-    const data = await res.json();
-    if (!res.ok) return;
-    await renderNewServices(data);
-    const banner = document.getElementById('newServicesBanner');
-    if ((data.new_services || []).length) {
-      banner.className = 'status-banner show fail';
-      banner.textContent = `${data.new_services.length} new service(s) need a category before Run.`;
-    } else {
-      banner.className = 'status-banner';
-      banner.textContent = '';
-    }
-  } catch (e) { /* ignore */ }
-}
-
-document.getElementById('refreshNewServicesBtn').addEventListener('click', refreshNewServices);
-
-document.getElementById('saveCategoriesBtn').addEventListener('click', async () => {
-  const banner = document.getElementById('newServicesBanner');
-  const assignments = {};
-  document.querySelectorAll('select.new-svc-cat').forEach(sel => {
-    assignments[sel.dataset.service] = sel.value;
-  });
-  if (!Object.keys(assignments).length) {
-    banner.className = 'status-banner show fail';
-    banner.textContent = 'Nothing to save.';
-    return;
-  }
-  const res = await fetch(`${API}/pipeline/categorize-services`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ assignments }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    banner.className = 'status-banner show fail';
-    banner.textContent = data.detail || 'Failed to save categories.';
-    return;
-  }
-  banner.className = 'status-banner show success';
-  banner.textContent = `Saved ${data.saved} service(s) to dictionary.json.`;
-  await renderNewServices(data.remaining || { new_services: [] });
-});
-
-checkScraperConfig();
-refreshUploads().then(refreshNewServices);
-restoreRuntime();
-
-async function restoreRuntime() {
-  try {
-    const res = await fetch(`${API}/runtime/status`);
-    const state = await res.json();
-    const ui = (state.ui && state.ui.intake) || {};
-    if (ui.scrapeFrom) document.getElementById('scrapeFrom').value = ui.scrapeFrom;
-    if (ui.scrapeTo) document.getElementById('scrapeTo').value = ui.scrapeTo;
-    if (ui.scrapePhysicians != null) document.getElementById('scrapePhysicians').value = ui.scrapePhysicians;
-
-    const scrape = state.scrape;
-    if (scrape && scrape.batch_id) {
-      if (scrape.from_date) document.getElementById('scrapeFrom').value = scrape.from_date;
-      if (scrape.to_date) document.getElementById('scrapeTo').value = scrape.to_date;
-      if (scrape.status === 'running') {
-        watchScrape(scrape.batch_id, { replayed: false });
-      } else {
-        applyScrapeLines(scrape.lines || []);
-      }
-    }
-
-    const pipe = state.pipeline;
-    if (pipe && pipe.batch_id) {
-      if (pipe.status === 'running') {
-        watchPipeline(pipe.batch_id, { replayed: false });
-      } else {
-        applyPipelineLines(pipe.lines || []);
-      }
-    }
-  } catch (e) {
-    /* ignore — fresh page */
-  }
-}
-
-// ── Auth: populate user chip, show Admin tab, wire logout ───────
-(async function initUserChip() {
-  const res = await fetch('/api/auth/me');
-  const data = await res.json();
-  if (!data.authenticated) { window.location.href = '/login'; return; }
-  if (data.role === 'user') { window.location.href = '/report'; return; }
-  document.querySelectorAll('nav.tabs a').forEach(a => {
-    a.classList.toggle('active', a.getAttribute('href') === '/');
-  });
-  const adminLink = document.getElementById('adminTabLink');
-  if (adminLink) adminLink.style.display = data.role === 'admin' ? '' : 'none';
-  const scrapeCard = document.getElementById('scrapeCard');
-  if (scrapeCard) scrapeCard.style.display = data.role === 'admin' ? '' : 'none';
-  const chip = document.getElementById('userChip');
-  if (chip) {
-    chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
-    document.getElementById('logoutBtn').addEventListener('click', async () => {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      window.location.href = '/login';
-    });
-  }
-})();
-</script>
-</body>
+    <script src="/app.js"></script>
+  </body>
 </html>
