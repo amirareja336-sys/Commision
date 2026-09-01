@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Test Mode</title>
+<link rel="stylesheet" href="/static/style.css?v=8">
+<style>
+  .tm-layout{
+    display:grid;
+    grid-template-columns:280px minmax(0,1fr);
+    gap:20px;
+    align-items:start;
+  }
+  @media (max-width:900px){
+    .tm-layout{ grid-template-columns:1fr; }
+  }
+  .tm-sidebar{
+    position:sticky;
+    top:16px;
+  }
+  .tm-banner{
+    background:var(--clay-soft);
+    border:1px solid #e2c4b8;
+    color:var(--clay);
+    border-radius:var(--radius-md);
+    padding:12px 16px;
+    margin-bottom:16px;
+    font-size:13px;
+  }
+  .tm-banner strong{ color:var(--ink); }
+  .tm-banner code{
+    font-family:var(--font-mono);
+    font-size:11px;
+    word-break:break-all;
+  }
+  .tm-list{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    max-height:220px;
+    overflow:auto;
+    margin:8px 0 12px;
+  }
+  .tm-list button{
+    width:100%;
+    text-align:left;
+    justify-content:flex-start;
+  }
+  .tm-list .empty{ color:var(--muted); font-size:12px; padding:6px 0; }
+  .tm-stack{ display:flex; flex-direction:column; gap:10px; }
+  .tm-row{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .tm-row input, .tm-row select{ min-width:140px; }
+  .tm-metrics{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+    gap:10px;
+  }
+  .tm-metric{
+    background:var(--accent-soft);
+    border-radius:var(--radius-sm);
+    padding:12px;
+  }
+  .tm-metric .label{ font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .tm-metric .value{ font-size:22px; font-weight:600; color:var(--accent-ink); margin-top:4px; }
+  .tm-tables{ display:flex; flex-direction:column; gap:6px; }
+  .tm-table-row{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:8px 10px; border:1px solid var(--hairline); border-radius:var(--radius-sm);
+    background:var(--surface);
+  }
+  .log-window{ height:220px; margin-top:8px; }
+  .danger-zone button{ background:var(--clay-soft); color:var(--clay); border-color:#e2c4b8; }
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Test Mode</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/testmode" class="active">Test Mode</a>
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <div class="tm-banner">
+    <strong>TEST MODE</strong> — operating on a non-production database.
+    Destructive actions only affect this DB.
+    <div style="margin-top:6px;"><code id="dbpath">…</code></div>
+  </div>
+
+  <div class="tm-layout">
+    <aside class="tm-sidebar card">
+      <h2>Datasets</h2>
+      <p class="meta-line">Load a prepared <code>data/test_*</code> DB, or pick a CSV pack.</p>
+
+      <div class="field">
+        <label>SQLite test folders</label>
+        <div class="tm-list" id="datasets"></div>
+      </div>
+
+      <div class="field">
+        <label>CSV datasets</label>
+        <div class="tm-list" id="csvDatasets"></div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--hairline);margin:14px 0;">
+
+      <h2 style="font-size:15px;">Generate</h2>
+      <div class="tm-stack">
+        <div class="tm-row">
+          <select id="genScenario">
+            <option value="1.1">1.1 — SoT wider than Abronal</option>
+            <option value="1.1.1">1.1.1 — Abronal inside SoT</option>
+            <option value="1.2">1.2 — Abronal wider than SoT</option>
+            <option value="1.2.1">1.2.1 — ranges aligned</option>
+          </select>
+        </div>
+        <label style="font-size:12px;color:var(--muted);">
+          <input type="checkbox" id="genFromProd"> Pull sample rows from production <code>commissions.db</code>
+        </label>
+        <div class="tm-row" id="prodDates" style="display:none;">
+          <input type="date" id="genStart" title="start">
+          <input type="date" id="genEnd" title="end">
+        </div>
+        <button id="genBtn">Generate dataset</button>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--hairline);margin:14px 0;">
+
+      <h2 style="font-size:15px;">Danger zone</h2>
+      <div class="tm-stack danger-zone">
+        <button id="resetDb">Reset DB schema</button>
+        <button id="refresh">Refresh status</button>
+      </div>
+    </aside>
+
+    <div class="tm-stack">
+      <div class="card">
+        <h2>Reconcile current mirrors</h2>
+        <p class="meta-line">Runs the same primary → secondary → category-merger pipeline against rows already in <code>abronal_mirror</code> / <code>sot_mirror</code> (no Excel upload required).</p>
+        <div class="tm-row">
+          <label style="font-size:12px;color:var(--muted);">
+            <input type="checkbox" id="clearResults" checked> Clear prior matched / unmatched first
+          </label>
+          <button id="runBtn">Run reconciliation</button>
+          <a href="/evaluation" style="font-size:13px;">Open Evaluation →</a>
+        </div>
+        <div class="log-window" id="runLog">Idle — no run yet.</div>
+      </div>
+
+      <div class="card">
+        <h2>Metrics</h2>
+        <div class="tm-metrics" id="metrics"></div>
+      </div>
+
+      <div class="card">
+        <h2>Upload / import</h2>
+        <div class="grid-2">
+          <div>
+            <h3 style="font-size:14px;margin:0 0 8px;">Upload SQLite / zip</h3>
+            <div class="tm-stack">
+              <input id="uploadName" placeholder="dataset name (no spaces)">
+              <input id="uploadFile" type="file" accept=".db,.sqlite,.zip">
+              <button id="uploadBtn">Upload dataset</button>
+            </div>
+          </div>
+          <div>
+            <h3 style="font-size:14px;margin:0 0 8px;">Upload CSV for a table</h3>
+            <div class="tm-stack">
+              <input id="csvName" placeholder="dataset name">
+              <select id="csvTable">
+                <option value="abronal_mirror">abronal_mirror</option>
+                <option value="sot_mirror">sot_mirror</option>
+                <option value="matched_records">matched_records</option>
+                <option value="unmatched_records">unmatched_records</option>
+                <option value="service_prices">service_prices</option>
+                <option value="physicians">physicians</option>
+              </select>
+              <input id="csvFile" type="file" accept=".csv">
+              <div class="tm-row">
+                <button id="csvUploadBtn">Upload CSV</button>
+                <button id="csvImportBtn">Import CSV pack into DB</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Tables</h2>
+        <div class="tm-tables" id="tables"></div>
+      </div>
+
+      <div class="card">
+        <h2>Output</h2>
+        <pre id="out" class="log-window" style="height:160px;white-space:pre-wrap;">Ready.</pre>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+async function api(path, opts){
+  const r = await fetch('/api/testmode'+path, opts);
+  const text = await r.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text }; }
+  if(!r.ok){
+    const detail = data.detail;
+    const msg = typeof detail === 'string' ? detail : (detail ? JSON.stringify(detail) : text || r.status);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function out(s){
+  document.getElementById('out').textContent = typeof s === 'string' ? s : JSON.stringify(s, null, 2);
+}
+
+function renderMetrics(counts){
+  const el = document.getElementById('metrics');
+  el.innerHTML = '';
+  Object.entries(counts || {}).forEach(([k,v])=>{
+    const d = document.createElement('div');
+    d.className = 'tm-metric';
+    d.innerHTML = `<div class="label">${k}</div><div class="value">${v ?? '—'}</div>`;
+    el.appendChild(d);
+  });
+}
+
+async function refreshMetrics(){
+  try{
+    const r = await api('/metrics');
+    renderMetrics(r.counts);
+  }catch(e){ /* ignore when inactive */ }
+}
+
+async function refreshTables(){
+  try{
+    const r = await api('/tables');
+    const el = document.getElementById('tables');
+    el.innerHTML = '';
+    (r.tables||[]).forEach(t=>{
+      const d = document.createElement('div');
+      d.className = 'tm-table-row';
+      d.innerHTML = `<span><strong>${t.name}</strong> — ${t.count ?? '—'} rows</span>`;
+      const btn = document.createElement('button');
+      btn.textContent = 'Clear';
+      btn.onclick = async ()=>{
+        if(!confirm('Clear table '+t.name+'?')) return;
+        await api('/clear_table',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({table:t.name})});
+        out('Cleared '+t.name);
+        refreshTables(); refreshMetrics();
+      };
+      d.appendChild(btn);
+      el.appendChild(d);
+    });
+  }catch(e){ out('Error: '+e.message); }
+}
+
+async function refresh(){
+  try{
+    const s = await api('/status');
+    document.getElementById('dbpath').textContent =
+      'DB: '+s.db_path+(s.active?' (active)':' (inactive — point COMMISSIONS_DB at a test DB)');
+    const ds = document.getElementById('datasets');
+    ds.innerHTML = '';
+    const folders = s.data_test_folders||[];
+    if(!folders.length){
+      ds.innerHTML = '<div class="empty">No data/test_* folders yet.</div>';
+    } else {
+      folders.forEach(d=>{
+        const b = document.createElement('button');
+        b.textContent = 'Load '+d;
+        b.onclick = async ()=>{
+          if(!confirm('Load '+d+'? This overwrites the active DB file.')) return;
+          const res = await api('/load_dataset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({folder:d})});
+          out(res); refreshTables(); refreshMetrics();
+        };
+        ds.appendChild(b);
+      });
+    }
+    const csvEl = document.getElementById('csvDatasets');
+    csvEl.innerHTML = '';
+    const csvs = s.csv_datasets||[];
+    if(!csvs.length){
+      csvEl.innerHTML = '<div class="empty">No CSV packs under data/csv_datasets/.</div>';
+    } else {
+      csvs.forEach(name=>{
+        const b = document.createElement('button');
+        b.textContent = 'Import '+name;
+        b.onclick = async ()=>{
+          if(!confirm('Import CSV dataset '+name+' into active DB?')) return;
+          document.getElementById('csvName').value = name;
+          const res = await api('/import_csv_dataset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name, clear_first:true})});
+          out(res); refreshTables(); refreshMetrics();
+        };
+        csvEl.appendChild(b);
+      });
+    }
+    await refreshMetrics();
+    await refreshTables();
+  }catch(e){ out('Error: '+e.message); }
+}
+
+document.getElementById('genFromProd').onchange = (e)=>{
+  document.getElementById('prodDates').style.display = e.target.checked ? 'flex' : 'none';
+};
+
+document.getElementById('uploadBtn').onclick = async ()=>{
+  const name = document.getElementById('uploadName').value.trim();
+  const fileInput = document.getElementById('uploadFile');
+  if(!name){ alert('Provide dataset name'); return; }
+  if(!fileInput.files.length){ alert('Select file'); return; }
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('file', fileInput.files[0]);
+  try{
+    const r = await fetch('/api/testmode/upload_dataset', {method:'POST', body: fd});
+    const j = await r.json();
+    if(!r.ok){ out('Upload failed: '+JSON.stringify(j)); return; }
+    out(j); refresh();
+  }catch(e){ out('Error: '+e.message); }
+};
+
+document.getElementById('genBtn').onclick = async ()=>{
+  const scenario = document.getElementById('genScenario').value;
+  const body = {
+    scenario,
+    from_prod: document.getElementById('genFromProd').checked,
+    start_date: document.getElementById('genStart').value || null,
+    end_date: document.getElementById('genEnd').value || null,
+  };
+  try{
+    const res = await api('/generate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    out(res.stdout || res); refresh();
+  }catch(e){ out('Error: '+e.message); }
+};
+
+document.getElementById('csvUploadBtn').onclick = async ()=>{
+  const name = document.getElementById('csvName').value.trim();
+  const table = document.getElementById('csvTable').value;
+  const fileInput = document.getElementById('csvFile');
+  if(!name){ alert('Provide dataset name'); return; }
+  if(!fileInput.files.length){ alert('Select CSV'); return; }
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('table', table);
+  fd.append('file', fileInput.files[0]);
+  try{
+    const r = await fetch('/api/testmode/upload_csv', {method:'POST', body: fd});
+    const j = await r.json();
+    if(!r.ok){ out('CSV upload failed: '+JSON.stringify(j)); return; }
+    out(j); refresh();
+  }catch(e){ out('Error: '+e.message); }
+};
+
+document.getElementById('csvImportBtn').onclick = async ()=>{
+  const name = document.getElementById('csvName').value.trim();
+  if(!name){ alert('Provide dataset name'); return; }
+  if(!confirm('Import CSV dataset '+name+' into active DB?')) return;
+  try{
+    const res = await api('/import_csv_dataset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name, clear_first:true})});
+    out(res); refreshTables(); refreshMetrics();
+  }catch(e){ out('Error: '+e.message); }
+};
+
+document.getElementById('resetDb').onclick = async ()=>{
+  if(!confirm('Reset DB schema? All data in the active test DB will be wiped.')) return;
+  try{
+    const r = await api('/reset_db',{method:'POST'});
+    out(r); refreshTables(); refreshMetrics();
+  }catch(e){ out('Error: '+e.message); }
+};
+
+document.getElementById('refresh').onclick = refresh;
+
+let pollTimer = null;
+document.getElementById('runBtn').onclick = async ()=>{
+  const logEl = document.getElementById('runLog');
+  logEl.textContent = 'Starting…';
+  try{
+    const res = await api('/run_reconcile',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ clear_results: document.getElementById('clearResults').checked }),
+    });
+    out(res);
+    const batchId = res.batch_id;
+    if(pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async ()=>{
+      try{
+        const log = await api('/run_log/'+batchId);
+        const lines = log.lines || [];
+        logEl.textContent = lines.join('\n') || '…';
+        logEl.scrollTop = logEl.scrollHeight;
+        const done = lines.some(l => String(l).startsWith('PIPELINE_DONE::'));
+        if(done){
+          clearInterval(pollTimer);
+          pollTimer = null;
+          refreshTables(); refreshMetrics();
+        }
+      }catch(e){ /* keep polling */ }
+    }, 800);
+  }catch(e){ logEl.textContent = 'Error: '+e.message; out('Error: '+e.message); }
+};
+
+(async ()=>{
+  const res = await fetch('/api/auth/me');
+  const me = await res.json();
+  if(!me.authenticated){ location.href = '/login'; return; }
+  const chip = document.getElementById('userChip');
+  chip.innerHTML = `<b>${me.username}</b> <span class="role-badge">${me.role}</span> <button id="logoutBtn">Log out</button>`;
+  document.getElementById('logoutBtn').onclick = async ()=>{
+    await fetch('/api/auth/logout', { method: 'POST' });
+    location.href = '/login';
+  };
+  refresh();
+})();
+</script>
+</body>
+</html>

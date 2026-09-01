@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
@@ -17,9 +18,30 @@ sys.path.insert(0, str(BACKEND_DIR))
 import db_manager as dbm  # noqa: E402
 import auth  # noqa: E402
 
-from routers import pipeline, tables, export, scraper, auth_router, admin, reports, runtime  # noqa: E402
+from routers import pipeline, tables, export, scraper, auth_router, admin, reports, runtime, testmode  # noqa: E402
 
-app = FastAPI(title="Reconciliation Console")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Ensure repo DB exists (on-disk path) and also ensure a test DB path
+    # exists under data/test_1_1/test.db when present. The active DB used
+    # by the app is controlled by the COMMISSIONS_DB env var; we avoid
+    # mutating that here — initialization only creates files if missing.
+    repo_db = dbm.DEFAULT_DB_PATH
+    dbm.init_db_at(repo_db)
+    dbm.seed_dictionary(APP_ROOT / "dictionary.json")
+    # If a test DB is present in data/test_1_1, ensure it has the schema
+    test_dir = APP_ROOT / "data" / "test_1_1"
+    test_db = test_dir / "test.db"
+    if test_dir.exists() and not test_db.exists():
+        dbm.init_db_at(test_db)
+    # Always run migrations against the active DB path
+    dbm._run_migrations()
+    import runtime_state as rt  # noqa: E402
+    rt.recover_on_startup()
+    yield
+
+
+app = FastAPI(title="Reconciliation Console", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +52,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
+app.include_router(testmode.router, prefix="/api/testmode", tags=["testmode"])
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(scraper.router, prefix="/api/scraper", tags=["scraper"])
 app.include_router(tables.router, prefix="/api/tables", tags=["tables"])
@@ -38,15 +61,7 @@ app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 app.include_router(runtime.router, prefix="/api/runtime", tags=["runtime"])
 
 
-@app.on_event("startup")
-def on_startup():
-    if not dbm.DB_PATH.exists():
-        dbm.init_db()
-        dbm.seed_dictionary(APP_ROOT / "dictionary.json")
-    else:
-        dbm._run_migrations()
-    import runtime_state as rt  # noqa: E402
-    rt.recover_on_startup()
+# Lifespan handler performs startup tasks (db init/migrations and runtime recovery)
 
 
 FRONTEND_DIR = APP_ROOT / "frontend"
@@ -66,6 +81,9 @@ def login_page(request: Request):
 
 
 def _home_for_role(role: str) -> str:
+    # Dev users go to the Test UI
+    if role == "dev":
+        return "/testmode"
     return "/report" if role == "user" else "/"
 
 
@@ -136,6 +154,19 @@ def admin_commission_calculator_page(request: Request):
 @app.get("/admin/reports")
 def admin_reports_page(request: Request):
     return _admin_page(request, "admin_reports.html")
+
+
+@app.get("/testmode")
+def testmode_page(request: Request):
+    session = _current_session(request)
+    if not session:
+        return RedirectResponse("/login")
+    # Only show when the app is running against a test DB.
+    if not testmode._test_mode_active():
+        return RedirectResponse(_home_for_role(session["role"]))
+    if session["role"] not in ("dev", "admin"):
+        return RedirectResponse(_home_for_role(session["role"]))
+    return FileResponse(FRONTEND_DIR / "testmode.html")
 
 
 @app.get("/admin/db")

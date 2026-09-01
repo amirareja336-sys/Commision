@@ -24,11 +24,13 @@ def do_login(req: LoginRequest, response: Response):
         response.status_code = 401
         return {"error": "Invalid username or password"}
     token = auth.create_session(user)
+    role = auth.effective_role(user)
     response.set_cookie(
         auth.SESSION_COOKIE, token,
         httponly=True, samesite="lax", max_age=auth.SESSION_TTL_SECONDS,
     )
-    return {"username": user["username"], "role": user["role"]}
+    home = "/testmode" if role == "dev" else ("/report" if role == "user" else "/")
+    return {"username": user["username"], "role": role, "home": home}
 
 
 @router.post("/logout")

@@ -1,5 +1,21 @@
 # Changelog
 
+### 2026-09-01 — Test mode and dev tooling (patched)
+
+- Fix multipart uploads (`Form` instead of `Body`) for dataset/CSV upload.
+- `dev` login now returns session role `dev` and redirects to `/testmode`; pipeline APIs accept `dev`.
+- `COMMISSIONS_DB` accepts a directory (resolves `test.db`) or a file path.
+- `start.bat` / `start.sh` prompt to create a scenario test DB + print `dev` credentials.
+- Test Mode UI rebuilt to match app chrome: sidebar dataset tools, metrics, table clears, and **Run reconciliation** against current mirrors.
+- Generator supports `--from-prod` to sample Abronal/SoT rows from `db/commissions.db`.
+
+### 2026-09-01 — Test mode and dev tooling
+
+- Add test data generator for reconciliation scenarios (1.1, 1.1.1, 1.2, 1.2.1).
+- Add `COMMISSIONS_DB` env override to run app against a separate test DB.
+- Add interactive Test Mode UI at `/testmode` and API endpoints for dataset loading, upload, generation, metrics, table clearing, and DB reset.
+- Add `READMEDAVE.md` with developer instructions for test operations.
+
 ## v0.18 — Categorize new services before reconciliation
 
 **Added**

@@ -12,9 +12,26 @@ import uuid
 from contextlib import contextmanager
 from datetime import date as _date, datetime, timezone
 from pathlib import Path
+import os
 
 DB_DIR = Path(__file__).resolve().parent
-DB_PATH = DB_DIR / "commissions.db"
+# Allow overriding the database file via COMMISSIONS_DB environment variable.
+# Accept either a file path or a directory (uses test.db / commissions.db inside).
+DEFAULT_DB_PATH = DB_DIR / "commissions.db"
+
+
+def _resolve_db_path(raw: str | Path) -> Path:
+    p = Path(raw)
+    if p.is_dir():
+        for name in ("test.db", "commissions.db"):
+            candidate = p / name
+            if candidate.exists():
+                return candidate
+        return p / "test.db"
+    return p
+
+
+DB_PATH = _resolve_db_path(os.environ.get("COMMISSIONS_DB", str(DEFAULT_DB_PATH)))
 SCHEMA_PATH = DB_DIR / "schema.sql"
 DICTIONARY_PATH = DB_DIR.parent / "dictionary.json"
 
@@ -191,6 +208,24 @@ def init_db() -> None:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     _run_migrations()
     print(f"Database initialized at {DB_PATH}")
+
+
+def init_db_at(path: str | Path) -> None:
+    """Initialize an empty DB file at `path` using the standard schema.
+
+    This is used to ensure both the repository DB and an optional test
+    DB can be created at startup without interfering with one another.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        return
+    conn = sqlite3.connect(str(p))
+    try:
+        conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _run_migrations() -> None:

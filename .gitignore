@@ -10,3 +10,4 @@ test_db_manager.py
 *.pyc
 data/scraper_debug/
 temp/
+*.csv

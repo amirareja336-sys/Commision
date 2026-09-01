@@ -24,13 +24,13 @@ def _parse_date(value):
 
 
 def load_mismatched_data(batch_id: str | None, log=print):
+    """Load all outstanding unmatched rows for fuzzy secondary matching.
+
+    Prior unmatched from earlier runs are included so reruns can resolve pairs
+    that were split across date ranges or batches.
+    """
     with dbm.get_conn() as conn:
-        if batch_id:
-            rows = conn.execute(
-                "SELECT * FROM unmatched_records WHERE batch_id = ?", (batch_id,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM unmatched_records").fetchall()
+        rows = conn.execute("SELECT * FROM unmatched_records").fetchall()
     rows = [dict(r) for r in rows]
 
     abr_side = [r for r in rows if r["abronal_row_id"] and not r["sot_row_id"]]
@@ -118,7 +118,18 @@ def grafter(buffer, batch_id, log=print):
                 "abronal_row_id": a["abronal_row_id"],
                 "sot_row_id": s["sot_row_id"],
             }
-            if dbm.row_exists(conn, "matched_records", match_key):
+            already_matched = (
+                dbm.row_exists(conn, "matched_records", match_key)
+                or conn.execute(
+                    "SELECT 1 FROM matched_records WHERE abronal_row_id = ? LIMIT 1",
+                    (a["abronal_row_id"],),
+                ).fetchone()
+                or conn.execute(
+                    "SELECT 1 FROM matched_records WHERE sot_row_id = ? LIMIT 1",
+                    (s["sot_row_id"],),
+                ).fetchone()
+            )
+            if already_matched:
                 conn.execute("DELETE FROM unmatched_records WHERE unmatched_id = ?", (a["unmatched_id"],))
                 conn.execute("DELETE FROM unmatched_records WHERE unmatched_id = ?", (s["unmatched_id"],))
                 continue

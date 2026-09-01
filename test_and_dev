@@ -1,0 +1,26 @@
+generate_test_data.py
+   main operation {
+        fucntion select_data(test case x){
+            from commisions.db, abronal_table and sot_table 
+             if test case == x select respective date range/data parse to csv then send to data/tests/x
+        }
+   }
+
+   dev  testpage
+
+   >>utilises the existing reconciliation fucntions for running recons on test data
+   >>additional functionalities on top of the existing table display
+   >>side bar for test selection/ data loading, database resetting.
+
+>> starting logic, 
+>> start.sh/ start.bin checks if there is a dev user in the db or if a test.db has been initialised
+   if not -> {
+    query the user if they want a dev mode. {Y/n}
+    if choice != n {
+        create test.db, prinst dev login credentials
+    }
+    else {normal startup}
+   }
+   else {
+    regular login with regitered dev user.
+   }

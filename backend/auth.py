@@ -18,12 +18,21 @@ SESSION_TTL_SECONDS = 12 * 60 * 60  # 12 hours
 _SESSIONS: dict[str, dict] = {}
 
 
+def effective_role(user: dict) -> str:
+    # Special-case the built-in `dev` user: assign a distinct role so
+    # callers can route them to the Test UI and restrict admin pages.
+    if user.get("username") == "dev":
+        return "dev"
+    return user.get("role") or "user"
+
+
 def create_session(user: dict) -> str:
     token = secrets.token_urlsafe(32)
+    role = effective_role(user)
     _SESSIONS[token] = {
         "user_id": user["user_id"],
         "username": user["username"],
-        "role": user["role"],
+        "role": role,
         "expires_at": time.time() + SESSION_TTL_SECONDS,
     }
     return token
@@ -68,6 +77,17 @@ def require_user(session_token: str | None = Cookie(default=None)) -> dict:
 
 def require_admin(session_token: str | None = Cookie(default=None)) -> dict:
     session = require_user(session_token)
-    if session["role"] != "admin":
+    # `dev` is the test-DB operator and may run pipeline/scraper APIs.
+    # Admin HTML pages still gate on role == "admin" in main.py.
+    if session["role"] not in ("admin", "dev"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return session
+
+
+def require_dev(session_token: str | None = Cookie(default=None)) -> dict:
+    session = require_user(session_token)
+    # Admins may also use Test Mode when COMMISSIONS_DB points at a test DB
+    # (endpoint handlers still gate on non-default DB).
+    if session.get("role") not in ("dev", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Dev access required")
     return session
