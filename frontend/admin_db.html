@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Database</title>
+<link rel="stylesheet" href="/static/style.css?v=7">
+<style>
+  .sheet-wrap { overflow:auto; max-height:62vh; border:1px solid var(--hairline); border-radius:var(--radius-md); }
+  .sheet { border-collapse:collapse; width:max-content; min-width:100%; font-size:12px; }
+  .sheet th, .sheet td { border:1px solid var(--hairline); padding:0; white-space:nowrap; }
+  .sheet th { position:sticky; top:0; background:var(--surface, #fff); z-index:1; padding:6px 8px; font-size:11px; text-align:left; }
+  .sheet td input {
+    width:100%; min-width:88px; border:0; background:transparent; padding:6px 8px;
+    font:inherit; color:inherit; box-sizing:border-box;
+  }
+  .sheet td input:focus { outline:2px solid var(--accent, #2a6); outline-offset:-2px; background:rgba(42,170,102,.06); }
+  .sheet td.pk input { font-weight:600; opacity:.75; }
+  .sheet tr.dirty td { background:rgba(255, 196, 0, .12); }
+  .sheet .row-actions { padding:4px 6px; }
+  .backup-box { display:grid; gap:6px; font-size:12.5px; color:var(--muted); }
+  .backup-box code { font-size:11px; }
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <p class="meta-line" style="margin:-6px 0 18px;"><a href="/admin">← Admin</a></p>
+
+  <div class="card">
+    <h2>Backup database</h2>
+    <p class="meta-line">Archival copy at <code>db/commissions_backup.db</code>. The app only edits the work DB. Backup appends new rows and never updates existing ones; <code>unmatched_records</code> may shrink when later matches remove them. Synced automatically after a successful pipeline run.</p>
+    <div class="backup-box" id="backupStatus">Loading…</div>
+    <div class="actions">
+      <button id="syncBackupBtn">Sync backup from work DB</button>
+    </div>
+    <div class="status-banner" id="backupBanner"></div>
+  </div>
+
+  <div class="card">
+    <h2>Work database editor</h2>
+    <p class="meta-line">Spreadsheet-style edit of <code>db/commissions.db</code>. Click a cell to change it, then Save row. Primary keys are read-only.</p>
+    <div class="filters-row">
+      <div class="field">
+        <label>Table</label>
+        <select id="tableSelect"></select>
+      </div>
+      <div class="field">
+        <button id="reloadBtn" class="secondary">Reload</button>
+      </div>
+      <div class="field">
+        <button id="addRowBtn">Add row</button>
+      </div>
+      <div class="field">
+        <button id="prevBtn" class="secondary">← Prev</button>
+      </div>
+      <div class="field">
+        <button id="nextBtn" class="secondary">Next →</button>
+      </div>
+    </div>
+    <div class="meta-line" id="rowMeta"></div>
+    <div class="sheet-wrap">
+      <table class="sheet" id="sheet">
+        <thead><tr></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="status-banner" id="editBanner"></div>
+  </div>
+</main>
+
+<script>
+const API = "/api/admin/db";
+const CHUNK = 200;
+let tablesMeta = [];
+let currentTable = null;
+let pkCol = null;
+let columns = [];
+let offset = 0;
+let total = 0;
+let rows = [];
+
+const tableSelect = document.getElementById("tableSelect");
+const thead = document.querySelector("#sheet thead tr");
+const tbody = document.querySelector("#sheet tbody");
+const rowMeta = document.getElementById("rowMeta");
+const editBanner = document.getElementById("editBanner");
+const backupBanner = document.getElementById("backupBanner");
+
+function show(el, kind, text) {
+  el.className = "status-banner show " + kind;
+  el.textContent = text;
+}
+
+async function loadBackupStatus() {
+  const res = await fetch(`${API}/backup`);
+  const data = await res.json();
+  const counts = Object.entries(data.counts || {})
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(" · ");
+  document.getElementById("backupStatus").innerHTML = `
+    <div><b>Path:</b> <code>${data.path || ""}</code> ${data.exists ? "(exists)" : "(not created yet)"}</div>
+    <div><b>Last sync:</b> ${data.last_sync_at || "never"}</div>
+    <div><b>Counts:</b> ${counts || "—"}</div>
+  `;
+}
+
+document.getElementById("syncBackupBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("syncBackupBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${API}/backup/sync`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Sync failed");
+    const added = Object.values(data.inserted || {}).reduce((a, b) => a + b, 0);
+    show(backupBanner, "success", `Backup synced (+${added} rows, −${data.deleted_unmatched || 0} unmatched).`);
+    await loadBackupStatus();
+  } catch (e) {
+    show(backupBanner, "fail", e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function loadTables() {
+  const res = await fetch(`${API}/tables`);
+  const data = await res.json();
+  tablesMeta = data.tables || [];
+  tableSelect.innerHTML = tablesMeta.map(t => `<option value="${t.name}">${t.name}</option>`).join("");
+  if (tablesMeta[0]) {
+    tableSelect.value = tablesMeta[0].name;
+    await loadSheet();
+  }
+}
+
+tableSelect.addEventListener("change", () => { offset = 0; loadSheet(); });
+document.getElementById("reloadBtn").addEventListener("click", loadSheet);
+document.getElementById("prevBtn").addEventListener("click", () => {
+  offset = Math.max(0, offset - CHUNK);
+  loadSheet();
+});
+document.getElementById("nextBtn").addEventListener("click", () => {
+  if (offset + CHUNK < total) { offset += CHUNK; loadSheet(); }
+});
+
+async function loadSheet() {
+  currentTable = tableSelect.value;
+  const res = await fetch(`${API}/tables/${encodeURIComponent(currentTable)}?limit=${CHUNK}&offset=${offset}`);
+  const data = await res.json();
+  if (!res.ok) { show(editBanner, "fail", data.detail || "Load failed"); return; }
+  pkCol = data.pk;
+  columns = data.columns;
+  rows = data.rows || [];
+  total = data.total || 0;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + CHUNK, total);
+  rowMeta.textContent = `Showing ${from}–${to} of ${total} · PK: ${pkCol}`;
+  document.getElementById("prevBtn").disabled = offset <= 0;
+  document.getElementById("nextBtn").disabled = offset + CHUNK >= total;
+  renderSheet();
+  editBanner.className = "status-banner";
+}
+
+function renderSheet() {
+  thead.innerHTML = columns.map(c => `<th>${c}</th>`).join("") + "<th></th>";
+  tbody.innerHTML = rows.map((row, idx) => {
+    const cells = columns.map(c => {
+      const isPk = c === pkCol;
+      const val = row[c] == null ? "" : String(row[c]);
+      return `<td class="${isPk ? "pk" : ""}"><input data-idx="${idx}" data-col="${c}" value="${val.replace(/"/g, "&quot;")}" ${isPk ? "readonly" : ""}></td>`;
+    }).join("");
+    return `<tr data-idx="${idx}">${cells}<td class="row-actions">
+      <button class="secondary save-row" data-idx="${idx}" style="padding:4px 8px;font-size:11px;">Save</button>
+      <button class="secondary del-row" data-idx="${idx}" style="padding:4px 8px;font-size:11px;">Del</button>
+    </td></tr>`;
+  }).join("") || `<tr><td colspan="${columns.length + 1}" style="padding:12px;color:var(--muted);">No rows</td></tr>`;
+
+  tbody.querySelectorAll("input:not([readonly])").forEach(inp => {
+    inp.addEventListener("input", () => {
+      const tr = inp.closest("tr");
+      tr.classList.add("dirty");
+      const idx = Number(inp.dataset.idx);
+      rows[idx][inp.dataset.col] = inp.value;
+    });
+  });
+  tbody.querySelectorAll(".save-row").forEach(btn => {
+    btn.addEventListener("click", () => saveRow(Number(btn.dataset.idx)));
+  });
+  tbody.querySelectorAll(".del-row").forEach(btn => {
+    btn.addEventListener("click", () => deleteRow(Number(btn.dataset.idx)));
+  });
+}
+
+async function saveRow(idx) {
+  const row = rows[idx];
+  const pk = row[pkCol];
+  const res = await fetch(`${API}/tables/${encodeURIComponent(currentTable)}/${encodeURIComponent(pk)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ values: row }),
+  });
+  const data = await res.json();
+  if (!res.ok) { show(editBanner, "fail", data.detail || "Save failed"); return; }
+  rows[idx] = data.row;
+  const tr = tbody.querySelector(`tr[data-idx="${idx}"]`);
+  if (tr) tr.classList.remove("dirty");
+  show(editBanner, "success", `Saved ${pkCol}=${pk}`);
+}
+
+async function deleteRow(idx) {
+  const row = rows[idx];
+  const pk = row[pkCol];
+  if (!confirm(`Delete ${currentTable} row ${pkCol}=${pk}?`)) return;
+  const res = await fetch(`${API}/tables/${encodeURIComponent(currentTable)}/${encodeURIComponent(pk)}`, {
+    method: "DELETE",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { show(editBanner, "fail", data.detail || "Delete failed"); return; }
+  show(editBanner, "success", `Deleted ${pkCol}=${pk}`);
+  await loadSheet();
+}
+
+document.getElementById("addRowBtn").addEventListener("click", async () => {
+  const blank = {};
+  for (const c of columns) {
+    if (c === pkCol) continue;
+    blank[c] = "";
+  }
+  const res = await fetch(`${API}/tables/${encodeURIComponent(currentTable)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ values: blank }),
+  });
+  const data = await res.json();
+  if (!res.ok) { show(editBanner, "fail", data.detail || "Insert failed"); return; }
+  show(editBanner, "success", `Inserted ${pkCol}=${data.row[pkCol]}`);
+  offset = Math.max(0, total - (total % CHUNK));
+  await loadSheet();
+});
+
+(async function init() {
+  const res = await fetch("/api/auth/me");
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = "/login"; return; }
+  if (data.role !== "admin") { window.location.href = "/report"; return; }
+  const chip = document.getElementById("userChip");
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  });
+  await loadBackupStatus();
+  await loadTables();
+})();
+</script>
+</body>
+</html>

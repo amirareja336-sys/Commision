@@ -1,0 +1,30 @@
+# Secrets — never bake these into the image; supplied at runtime
+# via env_file/volumes instead.
+.env
+.encryption_key
+
+# Runtime data — persisted via docker-compose volumes, not baked in.
+db/commissions.db
+data/uploads/sot/*
+data/uploads/abronal/*
+exports/*.xlsx
+temp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+
+# VCS
+.git/
+.gitignore
+
+# Docs not needed inside the image
+CHANGELOG.md

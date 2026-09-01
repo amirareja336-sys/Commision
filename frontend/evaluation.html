@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Evaluation</title>
+<link rel="stylesheet" href="/static/style.css?v=7">
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" id="adminTabLink" style="display:none;">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Table &amp; Filters</h2>
+    <div class="filters-row">
+      <div class="field">
+        <label>Table</label>
+        <select id="tableSelect"></select>
+      </div>
+      <div class="field" id="dynamicFilters" style="display:contents;"></div>
+      <div class="field">
+        <label>Start Date</label>
+        <input type="date" id="startDate">
+      </div>
+      <div class="field">
+        <label>End Date</label>
+        <input type="date" id="endDate">
+      </div>
+      <div class="field">
+        <button id="applyBtn">Apply Filters</button>
+      </div>
+      <div class="field">
+        <button id="clearBtn" class="secondary">Clear</button>
+      </div>
+    </div>
+    <div class="meta-line" id="rowCount"></div>
+    <div class="table-scroll">
+      <table id="dataTable">
+        <thead><tr></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="actions" style="justify-content:space-between; align-items:center;">
+      <div class="actions" style="margin-top:0;">
+        <button id="prevChunkBtn" class="secondary">← Previous 1000</button>
+        <button id="nextChunkBtn" class="secondary">Next 1000 →</button>
+      </div>
+      <div class="meta-line" id="chunkLabel" style="margin-bottom:0;"></div>
+    </div>
+    <div class="actions">
+      <button id="exportTableBtn">Export This Table to Excel</button>
+      <button id="exportAllBtn" class="accent">Export Full Database History</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = "/api";
+const CHUNK_SIZE = 1000;
+
+let currentTable = null;
+let currentColumns = [];
+let currentOffset = 0;
+let currentTotal = 0;
+let dateColumnsByTable = {};
+const combos = {};   // column -> { input, panel, selected, label }
+
+const tableSelect = document.getElementById('tableSelect');
+const dynamicFilters = document.getElementById('dynamicFilters');
+const rowCountEl = document.getElementById('rowCount');
+const chunkLabelEl = document.getElementById('chunkLabel');
+const prevBtn = document.getElementById('prevChunkBtn');
+const nextBtn = document.getElementById('nextChunkBtn');
+const thead = document.querySelector('#dataTable thead tr');
+const tbody = document.querySelector('#dataTable tbody');
+
+async function loadTableList() {
+  const [tablesRes, dateRes, uiRes] = await Promise.all([
+    fetch(`${API}/tables/list`),
+    fetch(`${API}/tables/date-columns`),
+    fetch(`${API}/runtime/ui/evaluation`).catch(() => null),
+  ]);
+  const data = await tablesRes.json();
+  const dateData = await dateRes.json();
+  dateColumnsByTable = dateData.date_columns || {};
+  tableSelect.innerHTML = data.tables.map(t => `<option value="${t}">${t}</option>`).join('');
+
+  let saved = {};
+  try {
+    if (uiRes && uiRes.ok) saved = (await uiRes.json()).state || {};
+  } catch (e) { saved = {}; }
+
+  const preferred = (saved.table && data.tables.includes(saved.table))
+    ? saved.table
+    : (data.tables.includes('matched_records')
+      ? 'matched_records'
+      : (data.tables.includes('commission_per_physicians') ? 'commission_per_physicians' : data.tables[0]));
+  if (preferred) tableSelect.value = preferred;
+  if (saved.startDate) document.getElementById('startDate').value = saved.startDate;
+  if (saved.endDate) document.getElementById('endDate').value = saved.endDate;
+  window.__savedEvalFilters = saved.filters || {};
+  window.__savedEvalOffset = saved.offset || 0;
+  await loadTable();
+}
+tableSelect.addEventListener('change', loadTable);
+
+async function loadTable() {
+  currentTable = tableSelect.value;
+  currentOffset = window.__savedEvalOffset || 0;
+  window.__savedEvalOffset = 0;
+  const colRes = await fetch(`${API}/tables/${currentTable}/columns`);
+  const colData = await colRes.json();
+  currentColumns = colData.columns;
+  await buildFilterCombos(currentColumns);
+  const savedFilters = window.__savedEvalFilters || {};
+  window.__savedEvalFilters = {};
+  for (const [col, val] of Object.entries(savedFilters)) {
+    if (combos[col] && val) {
+      combos[col].selected = val;
+      combos[col].input.value = val;
+    }
+  }
+  await fetchAndRender();
+  saveEvaluationUi();
+}
+
+function saveEvaluationUi() {
+  const state = {
+    table: currentTable,
+    filters: collectFilters(),
+    startDate: document.getElementById('startDate').value,
+    endDate: document.getElementById('endDate').value,
+    offset: currentOffset,
+  };
+  fetch(`${API}/runtime/ui`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page: 'evaluation', state }),
+  }).catch(() => {});
+}
+
+// ── Combined dropdown + search filter widget ────────────────────
+// One control per filterable column: type to search, or click to
+// see every distinct value in the table as a pickable list. Every
+// table always gets a "Row ID" filter on its own row-identifier
+// column (first column: row_id / match_id / unmatched_id / id / ...),
+// plus a few name/category-style columns when present.
+function preferredFilterColumns(columns) {
+  const pk = columns[0];
+  const named = columns.filter(c =>
+    c !== pk &&
+    /name|physician|service|category|status|source_file|match_type|reason/i.test(c) &&
+    !/(^id$|_id$)/i.test(c)
+  ).slice(0, 4);
+  return [{ col: pk, label: 'Row ID' }, ...named.map(c => ({ col: c, label: c.replace(/_/g, ' ') }))];
+}
+
+async function buildFilterCombos(columns) {
+  Object.keys(combos).forEach(k => delete combos[k]);
+  const filterCols = preferredFilterColumns(columns);
+  dynamicFilters.innerHTML = filterCols.map(({ col, label }) => `
+    <div class="field">
+      <label>${label}</label>
+      <div class="combo" data-col="${col}">
+        <input class="combo-input" type="text" placeholder="All" autocomplete="off">
+        <span class="combo-arrow">▾</span>
+        <div class="combo-panel"></div>
+      </div>
+    </div>
+  `).join('');
+
+  for (const { col } of filterCols) {
+    const root = dynamicFilters.querySelector(`.combo[data-col="${col}"]`);
+    const input = root.querySelector('.combo-input');
+    const panel = root.querySelector('.combo-panel');
+    let values = [];
+    try {
+      // Distinct values always come from the whole table in the
+      // database, never from whatever chunk happens to be on screen.
+      const res = await fetch(`${API}/tables/${currentTable}/distinct/${col}`);
+      const data = await res.json();
+      values = (data.values || []).map(String);
+    } catch (e) { values = []; }
+
+    combos[col] = { input, panel, selected: '' };
+    renderComboPanel(col, values, '');
+
+    input.addEventListener('focus', () => { root.classList.add('open'); });
+    input.addEventListener('input', () => {
+      combos[col].selected = input.value;
+      renderComboPanel(col, values, input.value);
+      root.classList.add('open');
+    });
+    input.addEventListener('blur', () => {
+      setTimeout(() => root.classList.remove('open'), 150);
+    });
+  }
+}
+
+function renderComboPanel(col, values, query) {
+  const { panel } = combos[col];
+  const q = query.trim().toLowerCase();
+  const filtered = q ? values.filter(v => v.toLowerCase().includes(q)) : values;
+  const rows = [`<div class="combo-option all-option" data-value="">All</div>`];
+  if (filtered.length) {
+    rows.push(...filtered.slice(0, 200).map(v => `<div class="combo-option" data-value="${v.replace(/"/g, '&quot;')}">${v}</div>`));
+  } else {
+    rows.push(`<div class="combo-empty">No matches</div>`);
+  }
+  panel.innerHTML = rows.join('');
+  panel.querySelectorAll('.combo-option[data-value]').forEach(opt => {
+    opt.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const val = opt.dataset.value;
+      combos[col].selected = val;
+      combos[col].input.value = val;
+      panel.closest('.combo').classList.remove('open');
+      currentOffset = 0;
+      fetchAndRender();
+    });
+  });
+}
+
+function collectFilters() {
+  const filters = {};
+  for (const [col, state] of Object.entries(combos)) {
+    if (state.selected && state.selected.trim()) filters[col] = state.selected.trim();
+  }
+  return filters;
+}
+
+// Every filter — including the date range — is sent to the server
+// and evaluated against the whole table in SQL. Only the resulting
+// (filtered) chunk of up to 1000 rows, at the current offset, comes
+// back to the browser; nothing is filtered client-side.
+async function fetchAndRender() {
+  const filters = collectFilters();
+  const params = new URLSearchParams(filters);
+  params.set('limit', CHUNK_SIZE);
+  params.set('offset', currentOffset);
+
+  const start = document.getElementById('startDate').value;
+  const end = document.getElementById('endDate').value;
+  if (start || end) {
+    const dateCol = dateColumnsByTable[currentTable];
+    if (dateCol) params.set('date_column', dateCol);
+    if (start) params.set('start_date', start);
+    if (end) params.set('end_date', end);
+  }
+
+  const res = await fetch(`${API}/tables/${currentTable}?${params.toString()}`);
+  const data = await res.json();
+  currentTotal = data.total ?? data.rows.length;
+  renderTable(currentColumns, data.rows);
+  updateChunkControls();
+  saveEvaluationUi();
+}
+
+function renderTable(columns, rows) {
+  // Add flag column for matched_records table
+  const showFlagColumn = currentTable === 'matched_records';
+  const headerCols = showFlagColumn
+    ? [...columns.map(c => `<th>${c}</th>`), '<th>Flag</th>']
+    : columns.map(c => `<th>${c}</th>`);
+  thead.innerHTML = headerCols.join('');
+
+  tbody.innerHTML = rows.map(r => {
+    const cells = columns.map(c => `<td>${r[c] ?? ''}</td>`).join('');
+    if (showFlagColumn) {
+      const isFlagged = r.user_flagged_mismatch === 1;
+      const flagBtn = `<td><button class="flag-btn ${isFlagged ? 'flagged' : ''}" data-id="${r.match_id}" title="${isFlagged ? 'Unflag' : 'Flag as mismatch'}">${isFlagged ? '🚩' : '⚑'}</button></td>`;
+      return `<tr class="${isFlagged ? 'row-flagged' : ''}">${cells}${flagBtn}</tr>`;
+    }
+    return `<tr>${cells}</tr>`;
+  }).join('');
+
+  // Attach flag button handlers
+  if (showFlagColumn) {
+    tbody.querySelectorAll('.flag-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const matchId = e.target.dataset.id;
+        const currentlyFlagged = e.target.classList.contains('flagged');
+        const reason = currentlyFlagged ? null : prompt('Reason for flagging (optional):');
+        if (!currentlyFlagged && reason === null) return; // User cancelled prompt
+
+        try {
+          const res = await fetch(`${API}/tables/matched_records/${matchId}/flag`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ flagged: !currentlyFlagged, reason: reason || null }),
+          });
+          if (res.ok) {
+            fetchAndRender(); // Refresh to show updated state
+          } else {
+            const data = await res.json();
+            alert('Failed to flag record: ' + (data.detail || 'Unknown error'));
+          }
+        } catch (err) {
+          alert('Error flagging record: ' + err.message);
+        }
+      });
+    });
+  }
+
+  rowCountEl.textContent = `${currentTotal} matching row(s) — table: ${currentTable}`;
+}
+
+function updateChunkControls() {
+  const from = currentTotal === 0 ? 0 : currentOffset + 1;
+  const to = Math.min(currentOffset + CHUNK_SIZE, currentTotal);
+  chunkLabelEl.textContent = `Showing ${from}–${to} of ${currentTotal}`;
+  prevBtn.disabled = currentOffset <= 0;
+  nextBtn.disabled = currentOffset + CHUNK_SIZE >= currentTotal;
+}
+
+prevBtn.addEventListener('click', () => {
+  currentOffset = Math.max(0, currentOffset - CHUNK_SIZE);
+  fetchAndRender();
+});
+nextBtn.addEventListener('click', () => {
+  currentOffset = currentOffset + CHUNK_SIZE;
+  fetchAndRender();
+});
+
+document.getElementById('applyBtn').addEventListener('click', () => {
+  currentOffset = 0;
+  fetchAndRender();
+});
+document.getElementById('clearBtn').addEventListener('click', () => {
+  for (const state of Object.values(combos)) {
+    state.selected = '';
+    state.input.value = '';
+  }
+  document.getElementById('startDate').value = '';
+  document.getElementById('endDate').value = '';
+  currentOffset = 0;
+  fetchAndRender();
+});
+
+['startDate', 'endDate'].forEach(id => {
+  document.getElementById(id).addEventListener('change', saveEvaluationUi);
+});
+
+document.getElementById('exportTableBtn').addEventListener('click', async () => {
+  const filters = collectFilters();
+  const start_date = document.getElementById('startDate').value || null;
+  const end_date = document.getElementById('endDate').value || null;
+  const res = await fetch(`${API}/export/table/${currentTable}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filters, start_date, end_date }),
+  });
+  await downloadBlob(res, `${currentTable}.xlsx`);
+});
+
+document.getElementById('exportAllBtn').addEventListener('click', async () => {
+  const start_date = document.getElementById('startDate').value || null;
+  const end_date = document.getElementById('endDate').value || null;
+  const res = await fetch(`${API}/export/all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start_date, end_date }),
+  });
+  await downloadBlob(res, `database_history.xlsx`);
+});
+
+async function downloadBlob(res, fallbackName) {
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : fallbackName;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+loadTableList();
+
+// ── Auth: populate user chip, show Admin tab, wire logout ───────
+(async function initUserChip() {
+  const res = await fetch('/api/auth/me');
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = '/login'; return; }
+  if (data.role === 'user') { window.location.href = '/report'; return; }
+  document.querySelectorAll('nav.tabs a').forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '/evaluation');
+  });
+  const adminLink = document.getElementById('adminTabLink');
+  if (adminLink) adminLink.style.display = data.role === 'admin' ? '' : 'none';
+  const chip = document.getElementById('userChip');
+  if (chip) {
+    chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+  }
+})();
+</script>
+</body>
+</html>

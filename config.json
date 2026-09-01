@@ -1,0 +1,9 @@
+{
+  "headless": true,
+  "patient_type": "OPD",
+  "skip_physicians": [
+    "temp temp",
+    "Temporary Senay",
+    "Aman a a"
+  ]
+}
