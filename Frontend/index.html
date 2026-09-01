@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Commission Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel">
+        <h1>Commission Export Control</h1>
+        <p>Use this form to send export dates and physician names to the PHP backend, avoiding the Tkinter date picker.</p>
+
+        <form id="export-form" class="form">
+          <label>
+            From date
+            <input id="fromDate" type="date" required />
+          </label>
+          <label>
+            To date
+            <input id="toDate" type="date" required />
+          </label>
+          <label>
+            Physicians (comma-separated)
+            <input id="physicians" type="text" placeholder="Dr. Ahmed, Dr. Sara" />
+          </label>
+          <button id="submit-btn" type="submit">Start export</button>
+        </form>
+
+        <p id="status" class="status"></p>
+
+        <h3>Recent export log</h3>
+        <pre id="log-box" class="log-box">Loading...</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Stored Records</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Doctor</th>
+              <th>Service</th>
+              <th>Amount</th>
+              <th>Category</th>
+            </tr>
+          </thead>
+          <tbody id="records-body">
+            <tr><td colspan="4">Loading...</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

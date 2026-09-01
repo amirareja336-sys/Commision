@@ -1,0 +1,16 @@
+{
+  "patient_type": "OPD",
+  "physicians": "all",
+  "skip_physicians": [
+    "temp temp",
+    "Temporary Senay",
+    "Aman a a"
+  ],
+  "lookback_days": 3,
+  "exclude_today": true,
+  "prompt_for_dates": true,
+  "headless": true,
+  "launch_analyzer": true,
+  "analyzer_auto_run": true,
+  "analyzer_script": "C:\\Users\\senay\\Desktop\\dr master analyzer\\reconciliation_app_v5.py"
+}
