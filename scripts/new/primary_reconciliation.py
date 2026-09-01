@@ -70,9 +70,8 @@ def physician_from_filename(filename: str) -> str:
     rest = [w for w in rest if w]
     if not rest:
         return base.strip() or "Unknown Physician"
-    first_name = rest[0].capitalize()
-    surname = rest[-1].capitalize()
-    name = first_name if first_name == surname and len(rest) == 1 else f"{first_name} {surname}"
+    formatted_tokens = [w.capitalize() for w in rest]
+    name = " ".join(formatted_tokens)
     return re.sub(r"\s+", " ", name).strip()
 
 

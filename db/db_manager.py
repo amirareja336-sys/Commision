@@ -708,8 +708,55 @@ def count_editable_table(table: str) -> int:
     return int(row["c"]) if row else 0
 
 
+# Denormalized copies of physicians.physician_name (kept in sync when
+# an admin edits the name in the DB editor).
+PHYSICIAN_NAME_MIRRORS = (
+    "matched_records",
+    "unmatched_records",
+    "commission_per_physicians",
+    "reports",
+)
+
+
+def _invalidate_review_cache() -> None:
+    try:
+        import matched_review_adapter as review  # noqa: PLC0415
+        review.invalidate_review_cache()
+    except Exception:
+        pass
+
+
+def _propagate_physician_name(conn, physician_id, name: str) -> None:
+    """Write `name` onto physicians and every denormalized physician_name column."""
+    if physician_id is None:
+        return
+    name = "" if name is None else str(name).strip()
+    conn.execute(
+        "UPDATE physicians SET physician_name = ? WHERE physician_id = ?",
+        (name, physician_id),
+    )
+    for table in PHYSICIAN_NAME_MIRRORS:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if not exists:
+            continue
+        cols = {r["name"] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+        if "physician_name" in cols and "physician_id" in cols:
+            conn.execute(
+                f'UPDATE "{table}" SET physician_name = ? WHERE physician_id = ?',
+                (name, physician_id),
+            )
+
+
 def update_table_row(table: str, pk_value, values: dict) -> dict:
-    """Update a work-DB row. Primary key column cannot be changed."""
+    """Update a work-DB row. Primary key column cannot be changed.
+
+    Changing physicians.physician_name (or physician_name on a row that
+    carries physician_id) rewrites that name on every related table so
+    Evaluation/Report filters stay in sync with the canonical row.
+    """
     if table not in EDITABLE_TABLES:
         raise ValueError(f"Table is not editable: {table}")
     pk = pk_column(table)
@@ -719,6 +766,7 @@ def update_table_row(table: str, pk_value, values: dict) -> dict:
         raise ValueError("No updatable columns provided")
     sets = ", ".join(f'"{c}" = ?' for c in payload)
     params = list(payload.values()) + [pk_value]
+    name_changed = "physician_name" in payload
     with get_conn() as conn:
         cur = conn.execute(
             f'UPDATE "{table}" SET {sets} WHERE "{pk}" = ?',
@@ -729,7 +777,32 @@ def update_table_row(table: str, pk_value, values: dict) -> dict:
         row = conn.execute(
             f'SELECT * FROM "{table}" WHERE "{pk}" = ?', (pk_value,)
         ).fetchone()
-    return dict(row)
+        row = dict(row)
+        physician_id = pk_value if table == "physicians" else row.get("physician_id")
+        if name_changed:
+            _propagate_physician_name(conn, physician_id, row.get("physician_name"))
+        elif (
+            table != "physicians"
+            and "physician_id" in payload
+            and physician_id is not None
+            and "physician_name" in cols
+        ):
+            phys = conn.execute(
+                "SELECT physician_name FROM physicians WHERE physician_id = ?",
+                (physician_id,),
+            ).fetchone()
+            if phys:
+                conn.execute(
+                    f'UPDATE "{table}" SET physician_name = ? WHERE "{pk}" = ?',
+                    (phys["physician_name"], pk_value),
+                )
+        row = conn.execute(
+            f'SELECT * FROM "{table}" WHERE "{pk}" = ?', (pk_value,)
+        ).fetchone()
+        row = dict(row)
+    if name_changed:
+        _invalidate_review_cache()
+    return row
 
 
 def insert_table_row(table: str, values: dict) -> dict:

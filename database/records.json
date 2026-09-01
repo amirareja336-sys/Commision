@@ -1,0 +1,14 @@
+[
+    {
+        "doctor_name": "Dr. Alice",
+        "service": "Consultation",
+        "amount": 1200,
+        "category": "Consultation"
+    },
+    {
+        "doctor_name": "Dr. Bob",
+        "service": "Laboratory",
+        "amount": 800,
+        "category": "Laboratory"
+    }
+]

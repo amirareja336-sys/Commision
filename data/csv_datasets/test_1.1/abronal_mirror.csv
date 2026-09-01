@@ -1,0 +1,4 @@
+row_number,card_number,patient_full_name,patient_type,service_id,service_raw,total,net,commission_percent,commision_amount,payment_date,visit_date,status,physician_id,source_file,batch_id
+1,CARD001,Patient A 1,,1,Test Service,100.0,80.0,10.0,8.0,2026-08-22,2026-08-22,paid,1,abr_test.xlsx,batch-test
+2,CARD002,Patient A 2,,1,Test Service,100.0,80.0,10.0,8.0,2026-08-23,2026-08-23,paid,1,abr_test.xlsx,batch-test
+3,CARD003,Patient A 3,,1,Test Service,100.0,80.0,10.0,8.0,2026-08-24,2026-08-24,paid,1,abr_test.xlsx,batch-test

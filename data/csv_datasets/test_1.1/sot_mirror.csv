@@ -1,0 +1,16 @@
+customer,tin_number,description,item_id,base_sku,quantity,unit_price,sub_total,tax_amount,withholding,fs_number,transaction_date,reference,MRC,service_id,source_file,batch_id
+Customer 1,TIN00001,desc,item1,sku1,1,100.0,100.0,0.0,,1,2026-08-17,ref1,,1,sot_test.xlsx,batch-test
+Customer 2,TIN00002,desc,item2,sku2,1,100.0,100.0,0.0,,2,2026-08-18,ref2,,1,sot_test.xlsx,batch-test
+Customer 3,TIN00003,desc,item3,sku3,1,100.0,100.0,0.0,,3,2026-08-19,ref3,,1,sot_test.xlsx,batch-test
+Customer 4,TIN00004,desc,item4,sku4,1,100.0,100.0,0.0,,4,2026-08-20,ref4,,1,sot_test.xlsx,batch-test
+Customer 5,TIN00005,desc,item5,sku5,1,100.0,100.0,0.0,,5,2026-08-21,ref5,,1,sot_test.xlsx,batch-test
+Customer 6,TIN00006,desc,item6,sku6,1,100.0,100.0,0.0,,6,2026-08-22,ref6,,1,sot_test.xlsx,batch-test
+Customer 7,TIN00007,desc,item7,sku7,1,100.0,100.0,0.0,,7,2026-08-23,ref7,,1,sot_test.xlsx,batch-test
+Customer 8,TIN00008,desc,item8,sku8,1,100.0,100.0,0.0,,8,2026-08-24,ref8,,1,sot_test.xlsx,batch-test
+Customer 9,TIN00009,desc,item9,sku9,1,100.0,100.0,0.0,,9,2026-08-25,ref9,,1,sot_test.xlsx,batch-test
+Customer 10,TIN00010,desc,item10,sku10,1,100.0,100.0,0.0,,10,2026-08-26,ref10,,1,sot_test.xlsx,batch-test
+Customer 11,TIN00011,desc,item11,sku11,1,100.0,100.0,0.0,,11,2026-08-27,ref11,,1,sot_test.xlsx,batch-test
+Customer 12,TIN00012,desc,item12,sku12,1,100.0,100.0,0.0,,12,2026-08-28,ref12,,1,sot_test.xlsx,batch-test
+Customer 13,TIN00013,desc,item13,sku13,1,100.0,100.0,0.0,,13,2026-08-29,ref13,,1,sot_test.xlsx,batch-test
+Customer 14,TIN00014,desc,item14,sku14,1,100.0,100.0,0.0,,14,2026-08-30,ref14,,1,sot_test.xlsx,batch-test
+Customer 15,TIN00015,desc,item15,sku15,1,100.0,100.0,0.0,,15,2026-08-31,ref15,,1,sot_test.xlsx,batch-test
