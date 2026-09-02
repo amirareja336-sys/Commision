@@ -215,6 +215,8 @@ def _run_migrations() -> None:
         ("matched_records", "user_flag_reason", "TEXT DEFAULT NULL"),
         ("matched_records", "physician_name", "TEXT NOT NULL DEFAULT ''"),
         ("unmatched_records", "physician_name", "TEXT NOT NULL DEFAULT ''"),
+        ("matched_records", "source", "TEXT NOT NULL DEFAULT 'OPD'"),
+        ("matched_records", "ipd_row_id", "INTEGER"),
     ]
     with get_conn() as conn:
         for table, column, decl in migrations:
@@ -723,7 +725,7 @@ def get_or_create_service(conn: sqlite3.Connection, service_type: str, category:
 
 
 TABLES = [
-    "physicians", "service_prices", "abronal_mirror", "sot_mirror",
+    "physicians", "service_prices", "abronal_mirror", "ipd_mirror", "sot_mirror",
     "matched_records", "unmatched_records", "commission_per_physicians",
 ]
 
@@ -732,6 +734,7 @@ EDITABLE_TABLES = TABLES + ["physician_category_commision_rates"]
 
 TABLE_DATE_COLUMNS = {
     "abronal_mirror": "payment_date",
+    "ipd_mirror": "payment_date",
     "sot_mirror": "transaction_date",
     "matched_records": "payment_date",
     "unmatched_records": "abronal_payment_date",
@@ -743,6 +746,7 @@ TABLE_PK_COLUMNS = {
     "service_prices": "service_id",
     "physician_category_commision_rates": "physician_id",
     "abronal_mirror": "row_id",
+    "ipd_mirror": "row_id",
     "sot_mirror": "row_id",
     "matched_records": "match_id",
     "unmatched_records": "unmatched_id",

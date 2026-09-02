@@ -25,6 +25,7 @@ import db_manager as dbm  # noqa: E402
 import primary_reconciliation  # noqa: E402
 import secondary_name_matcher  # noqa: E402
 import category_merger  # noqa: E402
+import ipd_reconciliation  # noqa: E402
 import matched_review_adapter as review  # noqa: E402
 import auth  # noqa: E402
 import runtime_state as rt  # noqa: E402
@@ -38,6 +39,8 @@ UPLOAD_EXTENSIONS = {".xlsx", ".xls", ".csv", ".tsv"}
 # so progress survives page navigation (and can be restored after a refresh).
 RUN_LOGS: Dict[str, List[str]] = {}
 RUN_LISTENERS: Dict[str, List[asyncio.Queue]] = {}
+IPD_RECON_LOGS: Dict[str, List[str]] = {}
+IPD_RECON_LISTENERS: Dict[str, List[asyncio.Queue]] = {}
 
 
 def _emit(batch_id: str, message: str):
@@ -105,12 +108,24 @@ def _safe_upload_path(kind: str, filename: str) -> Path:
     return path
 
 
+def _emit_ipd(batch_id: str, message: str):
+    IPD_RECON_LOGS.setdefault(batch_id, []).append(message)
+    for q in IPD_RECON_LISTENERS.get(batch_id, []):
+        q.put_nowait(message)
+    rt.append_line("ipd_reconcile", batch_id, message)
+
 def _guard_idle_pipeline() -> None:
     job = rt.get_job("pipeline")
     if job.get("status") == "running":
         raise HTTPException(
             status_code=409,
             detail="Cannot remove uploads while reconciliation is running",
+        )
+    ipd_job = rt.get_job("ipd_reconcile")
+    if ipd_job.get("status") == "running":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot remove uploads while IPD reconciliation is running",
         )
 
 
@@ -163,6 +178,9 @@ async def run_pipeline(user=Depends(auth.require_admin)):
     current = rt.get_job("pipeline")
     if current.get("status") == "running" and current.get("batch_id"):
         return {"batch_id": current["batch_id"], "resumed": True}
+    ipd = rt.get_job("ipd_reconcile")
+    if ipd.get("status") == "running":
+        raise HTTPException(status_code=409, detail="IPD reconciliation is still running.")
     batch_id = dbm.new_batch_id()
     RUN_LOGS[batch_id] = []
     RUN_LISTENERS[batch_id] = []
@@ -209,6 +227,106 @@ def _run_pipeline_sync(batch_id: str):
         tb = traceback.format_exc()
         _emit(batch_id, f"ERROR: {e}\n{tb}")
         _emit(batch_id, "PIPELINE_DONE::failed")
+
+
+def _run_ipd_reconcile_sync(batch_id: str):
+    try:
+        _emit_ipd(batch_id, f"Starting IPD reconciliation {batch_id}")
+        r = ipd_reconciliation.run(batch_id, log=lambda m: _emit_ipd(batch_id, m))
+        _emit_ipd(batch_id, f"IPD reconciliation done: {r}")
+
+        if r.get("matched", 0) > 0:
+            _emit_ipd(batch_id, "Running category merger for new IPD matches…")
+            r3 = category_merger.run(batch_id, log=lambda m: _emit_ipd(batch_id, m))
+            _emit_ipd(batch_id, f"Category merger done: {len(r3)} rows condensed.")
+
+        review.invalidate_review_cache()
+        _emit_ipd(batch_id, "Accountant review cache cleared.")
+
+        try:
+            import backup_manager as backup  # noqa: E402
+            sync = backup.sync_backup_from_work()
+            _emit_ipd(
+                batch_id,
+                "Backup DB synced "
+                f"(+{sum(sync.get('inserted', {}).values())} rows, "
+                f"-{sync.get('deleted_unmatched', 0)} unmatched).",
+            )
+        except Exception as be:  # noqa: BLE001
+            _emit_ipd(batch_id, f"WARNING: backup sync failed: {be}")
+
+        _emit_ipd(batch_id, "IPD_RECON_DONE::success")
+    except Exception as e:  # noqa: BLE001
+        tb = traceback.format_exc()
+        _emit_ipd(batch_id, f"ERROR: {e}\n{tb}")
+        _emit_ipd(batch_id, "IPD_RECON_DONE::failed")
+
+
+@router.post("/ipd-reconcile")
+async def run_ipd_reconcile(user=Depends(auth.require_admin)):
+    pending = service_discovery.discover_new_services(UPLOAD_ABR_DIR, UPLOAD_SOT_DIR)
+    if pending.get("new_services"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{len(pending['new_services'])} new service(s) need categories "
+                    "before IPD reconciliation can run."
+                ),
+                "new_services": pending["new_services"],
+                "categories": pending["categories"],
+            },
+        )
+    current = rt.get_job("ipd_reconcile")
+    if current.get("status") == "running" and current.get("batch_id"):
+        return {"batch_id": current["batch_id"], "resumed": True}
+    pipe = rt.get_job("pipeline")
+    if pipe.get("status") == "running":
+        raise HTTPException(status_code=409, detail="OPD pipeline is still running.")
+    batch_id = dbm.new_batch_id()
+    IPD_RECON_LOGS[batch_id] = []
+    IPD_RECON_LISTENERS[batch_id] = []
+    rt.start_job("ipd_reconcile", batch_id)
+    asyncio.get_event_loop().run_in_executor(None, _run_ipd_reconcile_sync, batch_id)
+    return {"batch_id": batch_id, "resumed": False}
+
+
+@router.get("/ipd-reconcile/status")
+def ipd_reconcile_status(user=Depends(auth.require_admin)):
+    job = rt.get_job("ipd_reconcile")
+    bid = job.get("batch_id")
+    if bid and bid in IPD_RECON_LOGS:
+        job = {**job, "lines": list(IPD_RECON_LOGS[bid])}
+    return job
+
+
+@router.get("/ipd-reconcile/log/{batch_id}")
+def get_ipd_reconcile_log(batch_id: str, user=Depends(auth.require_admin)):
+    if batch_id in IPD_RECON_LOGS:
+        return {"lines": IPD_RECON_LOGS[batch_id]}
+    job = rt.get_job("ipd_reconcile")
+    if job.get("batch_id") == batch_id:
+        return {"lines": job.get("lines") or []}
+    return {"lines": []}
+
+
+@router.websocket("/ipd-reconcile/ws/{batch_id}")
+async def ws_ipd_reconcile_log(websocket: WebSocket, batch_id: str):
+    await websocket.accept()
+    q: asyncio.Queue = asyncio.Queue()
+    IPD_RECON_LISTENERS.setdefault(batch_id, []).append(q)
+    try:
+        for line in IPD_RECON_LOGS.get(batch_id, []):
+            await websocket.send_text(line)
+        while True:
+            line = await q.get()
+            await websocket.send_text(line)
+            if line.startswith("IPD_RECON_DONE::"):
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        IPD_RECON_LISTENERS.get(batch_id, []).remove(q)
 
 
 @router.get("/status")

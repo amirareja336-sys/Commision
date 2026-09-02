@@ -18,6 +18,8 @@ ENV_PATH = APP_ROOT / ".env"
 CONFIG_PATH = APP_ROOT / "config.json"
 UPLOAD_ABR_DIR = APP_ROOT / "data" / "uploads" / "abronal"
 tempfile =  APP_ROOT / "data" / "temp"
+sys.path.insert(0, str(APP_ROOT / "db"))
+import db_manager as dbm  # noqa: E402
 
 load_dotenv(ENV_PATH)
 # File values preferred over process env — on Windows, USERNAME is always the
@@ -66,6 +68,12 @@ class ScraperConfig:
         if not v:
             raise ScraperError("BASE_URL is not set (add it to .env)")
         return v
+
+    @property
+    def ipd_base_url(self) -> str:
+        """Optional separate host for IPD Physician Performance (falls back to BASE_URL)."""
+        v = self._resolve("IPD_BASE_URL")
+        return (v or self.base_url).rstrip("/")
 
     @property
     def username(self) -> str:
@@ -151,6 +159,7 @@ class Physician:
 class ScrapeResult:
     saved: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    ipd_rows: int = 0
 
 
 # ── Browser automation ────────────────────────────────────────────
@@ -279,6 +288,50 @@ class AbronalSession:
         dl_info.value.save_as(target)
         return target
 
+    def fetch_performance_rows(
+        self,
+        *,
+        physician: Physician,
+        patient_type: str,
+        date_range: DateRange,
+    ) -> list[dict]:
+        """Load Physician Performance grid via AJAX and return JSON rows."""
+        required = {"patientFullName", "service", "netAmount", "collectedDate"}
+        page = self.page
+        page.fill("#fromDate", date_range.from_date.isoformat())
+        page.fill("#toDate", date_range.to_date.isoformat())
+        page.fill("#fromTime", "00:00")
+        page.fill("#toTime", "23:59")
+
+        ptype_value = "opd" if patient_type.strip().upper() == "OPD" else "ipd"
+        self._select2_set("pType", ptype_value)
+        self._select2_set("cardiologist", physician.value)
+
+        with page.expect_response(
+            lambda r: "/Reports/GetPhysicianPerformance" in r.url and r.ok, timeout=60_000
+        ) as resp_info:
+            page.click("#show")
+        try:
+            data = resp_info.value.json()
+        except Exception as exc:
+            raise ScraperError("Physician performance response was not valid JSON") from exc
+
+        if not isinstance(data, list):
+            raise ScraperError("No data found on the site (unexpected response type)")
+        if not data:
+            return []
+
+        sample = data[0]
+        if not isinstance(sample, dict):
+            raise ScraperError("Mismatched columns: expected object rows from Physician Performance")
+        missing = required - set(sample.keys())
+        if missing:
+            raise ScraperError(
+                "Mismatched columns: missing "
+                f"{sorted(missing)} in Physician Performance response"
+            )
+        return data
+
 
 def _should_skip(name: str, skip_names: list[str]) -> bool:
     name_l = name.lower().strip()
@@ -327,14 +380,26 @@ def _resolve_targets(options: list[Physician], skip_names: list[str],
 
 # ── Orchestration ──────────────────────────────────────────────
 
-def run(from_date: str, to_date: str, physicians: list[str] | None = None, log=print) -> ScrapeResult:
-    """Log in to Abronal, export every requested physician's report
-    for [from_date, to_date] straight into data/uploads/abronal/."""
+def run(from_date: str, to_date: str, physicians: list[str] | None = None,
+        log=print, *, patient_type: str | None = None, out_dir: Path | None = None,
+        batch_id: str | None = None) -> ScrapeResult:
+    """Log in to Abronal, export OPD reports and mirror IPD rows for each physician."""
+    import ipd_scraper  # noqa: E402 — lazy import avoids circular dependency
+
     cfg = ScraperConfig()
+    cfg_data = _load_config()
+    ipd_enabled = bool(cfg_data.get("ipd_enabled", True))
     date_range = DateRange.from_iso(from_date, to_date)
     result = ScrapeResult()
+    ptype = (patient_type or cfg.patient_type or "OPD").strip().upper()
+    dest = Path(out_dir) if out_dir else UPLOAD_ABR_DIR
+    ipd_batch = batch_id or dbm.new_batch_id() if ipd_enabled else None
+    all_ipd_rows: list[dict] = []
 
     log(f"Date range: {date_range.label()}")
+    log(f"Patient type (OPD export): {ptype}")
+    if ipd_enabled:
+        log("IPD mirror fetch: enabled (runs alongside each OPD export)")
     log("Launching browser…")
     with sync_playwright() as p:
         # Ephemeral context + no password-manager/autofill so .env credentials
@@ -371,22 +436,42 @@ def run(from_date: str, to_date: str, physicians: list[str] | None = None, log=p
                 f"{', '.join(t.label for t in targets)}")
 
             for i, physician in enumerate(targets, start=1):
-                log(f"[{i}/{len(targets)}] Exporting {physician.label}…")
+                log(f"[{i}/{len(targets)}] Exporting {physician.label} (OPD)…")
                 try:
                     path = session.export_one(
-                        physician=physician, patient_type=cfg.patient_type,
-                        date_range=date_range, out_dir=UPLOAD_ABR_DIR,
+                        physician=physician, patient_type=ptype,
+                        date_range=date_range, out_dir=dest,
                     )
                     result.saved.append(path.name)
                     log(f"  Saved {path.name}")
                 except Exception as e:  # noqa: BLE001
-                    log(f"  FAILED for {physician.label}: {e}")
+                    log(f"  FAILED OPD export for {physician.label}: {e}")
                     result.failed.append(physician.label)
                     try:
                         session.open_report()
                     except Exception:
                         log("  Could not recover report page — stopping.")
                         break
+                    continue
+
+                if ipd_enabled and ipd_batch:
+                    try:
+                        ipd_rows = ipd_scraper.fetch_rows_for_physician(
+                            session, physician=physician, date_range=date_range, log=log,
+                        )
+                        all_ipd_rows.extend(ipd_rows)
+                        log(f"  IPD: {len(ipd_rows)} row(s) fetched")
+                    except ScraperError as exc:
+                        log(f"  WARNING: IPD fetch for {physician.label}: {exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"  WARNING: IPD fetch for {physician.label}: {exc}")
+
+            if ipd_enabled and ipd_batch and all_ipd_rows:
+                ipd_scraper.persist_ipd_mirror(all_ipd_rows, ipd_batch, log=log)
+                result.ipd_rows = len(all_ipd_rows)
+                log(f"IPD mirror: {result.ipd_rows} row(s) stored (batch {ipd_batch})")
+            elif ipd_enabled:
+                log("IPD mirror: no rows returned from the site for this date range.")
         except PlaywrightTimeout as e:
             raise ScraperError(f"Timed out talking to Abronal: {e}") from e
         finally:
@@ -399,7 +484,8 @@ def run(from_date: str, to_date: str, physicians: list[str] | None = None, log=p
             except Exception:
                 pass
 
-    log(f"Done. {len(result.saved)} exported, {len(result.failed)} failed.")
+    log(f"Done. {len(result.saved)} OPD exported, {len(result.failed)} failed, "
+        f"{result.ipd_rows} IPD rows mirrored.")
     return result
 
 

@@ -20,7 +20,12 @@ def runtime_status(user=Depends(auth.require_user)):
     state = rt.load()
     # Non-admins only need UI (report) state; jobs are admin-only.
     if user.get("role") != "admin":
-        return {"pipeline": None, "scrape": None, "ui": {"report": state["ui"].get("report", {})}}
+        return {
+            "pipeline": None,
+            "scrape": None,
+            "ipd_reconcile": None,
+            "ui": {"report": state["ui"].get("report", {})},
+        }
     return state
 
 

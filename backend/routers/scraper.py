@@ -46,9 +46,10 @@ def _run_scrape_sync(batch_id: str, req: ScrapeRequest):
     try:
         _emit(batch_id, f"Starting Abronal export run {batch_id}")
         result = abronal_scraper.run(
-            req.from_date, req.to_date, req.physicians, log=lambda m: _emit(batch_id, m)
+            req.from_date, req.to_date, req.physicians,
+            log=lambda m: _emit(batch_id, m), batch_id=batch_id,
         )
-        status = "success" if result.saved else "failed"
+        status = "success" if result.saved or result.ipd_rows else "failed"
         _emit(batch_id, f"SCRAPE_DONE::{status}")
     except abronal_scraper.ScraperError as e:
         _emit(batch_id, f"ERROR: {e}")

@@ -31,6 +31,7 @@ BACKUP_TABLES = [
     "service_prices",
     "physician_category_commision_rates",
     "abronal_mirror",
+    "ipd_mirror",
     "sot_mirror",
     "matched_records",
     "unmatched_records",
@@ -42,11 +43,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _migrate_backup_schema(conn: sqlite3.Connection) -> None:
+    migrations = [
+        ("commission_per_physicians", "physician_name", "TEXT NOT NULL DEFAULT ''"),
+        ("matched_records", "user_flagged_mismatch", "INTEGER NOT NULL DEFAULT 0"),
+        ("matched_records", "user_flag_reason", "TEXT DEFAULT NULL"),
+        ("matched_records", "physician_name", "TEXT NOT NULL DEFAULT ''"),
+        ("unmatched_records", "physician_name", "TEXT NOT NULL DEFAULT ''"),
+        ("matched_records", "source", "TEXT NOT NULL DEFAULT 'OPD'"),
+        ("matched_records", "ipd_row_id", "INTEGER"),
+    ]
+    for table, column, decl in migrations:
+        existing = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+        if not existing:
+            continue
+        if column not in existing:
+            conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {decl}')
+
+
 def _ensure_backup_schema() -> None:
     BACKUP_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(BACKUP_DB)
     try:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        _migrate_backup_schema(conn)
         conn.commit()
     finally:
         conn.close()

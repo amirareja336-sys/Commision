@@ -43,6 +43,28 @@ CREATE TABLE IF NOT EXISTS abronal_mirror (
     batch_id             TEXT
 );
 
+-- ── IPD Abronal export rows (same Physician Performance report with
+--    patient type IPD). Matched later against leftover unmatched SoT. ─
+CREATE TABLE IF NOT EXISTS ipd_mirror (
+    row_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    row_number          INTEGER,
+    card_number         TEXT,
+    patient_full_name   TEXT NOT NULL,
+    patient_type        TEXT,
+    service_id          INTEGER REFERENCES service_prices(service_id),
+    service_raw         TEXT,
+    total                NUMERIC,
+    net                  NUMERIC,
+    commission_percent   REAL,
+    commision_amount     REAL,
+    payment_date         TEXT,
+    visit_date           TEXT,
+    status               TEXT,
+    physician_id         INTEGER REFERENCES physicians(physician_id),
+    source_file          TEXT,
+    batch_id             TEXT
+);
+
 -- ── Raw SoT (source of truth) rows loaded from uploaded Excel ───
 CREATE TABLE IF NOT EXISTS sot_mirror (
     row_id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +103,8 @@ CREATE TABLE IF NOT EXISTS matched_records (
     user_flag_reason TEXT DEFAULT NULL,
     abronal_row_id  INTEGER REFERENCES abronal_mirror(row_id),
     sot_row_id      INTEGER REFERENCES sot_mirror(row_id),
+    ipd_row_id      INTEGER REFERENCES ipd_mirror(row_id),
+    source          TEXT NOT NULL DEFAULT 'OPD',   -- OPD | IPD
     batch_id        TEXT
 );
 
@@ -154,6 +178,7 @@ CREATE TABLE IF NOT EXISTS physician_category_commision_rates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_abronal_physician ON abronal_mirror(physician_id);
+CREATE INDEX IF NOT EXISTS idx_ipd_physician ON ipd_mirror(physician_id);
 CREATE INDEX IF NOT EXISTS idx_abronal_service ON abronal_mirror(service_id);
 CREATE INDEX IF NOT EXISTS idx_sot_service ON sot_mirror(service_id);
 CREATE INDEX IF NOT EXISTS idx_matched_physician ON matched_records(physician_id);

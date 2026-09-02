@@ -43,6 +43,7 @@ def _default_state() -> dict[str, Any]:
             "to_date": None,
             "physicians": None,
         },
+        "ipd_reconcile": _empty_job(),
         "ui": {
             "intake": {},
             "evaluation": {},
@@ -64,7 +65,7 @@ def _load_unlocked() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return _default_state()
     base = _default_state()
-    for key in ("pipeline", "scrape", "ui"):
+    for key in ("pipeline", "scrape", "ipd_reconcile", "ui"):
         if isinstance(data.get(key), dict):
             if key == "ui":
                 for page in ("intake", "evaluation", "report"):
@@ -92,7 +93,11 @@ def recover_on_startup() -> None:
     with _LOCK:
         state = _load_unlocked()
         dirty = False
-        for kind, done_prefix in (("pipeline", "PIPELINE_DONE"), ("scrape", "SCRAPE_DONE")):
+        for kind, done_prefix in (
+            ("pipeline", "PIPELINE_DONE"),
+            ("scrape", "SCRAPE_DONE"),
+            ("ipd_reconcile", "IPD_RECON_DONE"),
+        ):
             job = state[kind]
             if job.get("status") == "running":
                 job["status"] = "failed"
@@ -130,7 +135,7 @@ def append_line(kind: str, batch_id: str, message: str) -> None:
         lines = list(job.get("lines") or [])
         lines.append(message)
         job["lines"] = lines[-_MAX_LINES:]
-        if message.startswith("PIPELINE_DONE::") or message.startswith("SCRAPE_DONE::"):
+        if message.startswith("PIPELINE_DONE::") or message.startswith("SCRAPE_DONE::") or message.startswith("IPD_RECON_DONE::"):
             job["status"] = "success" if message.endswith("success") else "failed"
             job["finished_at"] = _now()
         _save_unlocked(state)

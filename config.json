@@ -1,6 +1,7 @@
 {
   "headless": true,
   "patient_type": "OPD",
+  "ipd_enabled": true,
   "skip_physicians": [
     "temp temp",
     "Temporary Senay",

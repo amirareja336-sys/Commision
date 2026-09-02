@@ -21,7 +21,7 @@
 <main>
   <div class="card" id="scrapeCard">
     <h2>01 · Fetch from Abronal (optional, admin only)</h2>
-    <p class="meta-line">Pulls physician performance exports directly from Abronal for a date range and drops them into the Abronal upload slot below — no manual download needed. Requires credentials in <code>.env</code> (see README).</p>
+    <p class="meta-line">Pulls OPD physician performance exports into the Abronal upload slot below and mirrors IPD rows into <code>ipd_mirror</code> in the same run. Requires credentials in <code>.env</code> (see README).</p>
     <div class="filters-row">
       <div class="field">
         <label>From Date</label>
@@ -67,7 +67,7 @@
 
   <div class="card" id="newServicesCard" style="display:none;">
     <h2>04 · Categorize new services</h2>
-    <p class="meta-line">These services appear in the current uploads but are not in <code>dictionary.json</code>. Assign a category for each before running reconciliation (otherwise they would be stored as Other).</p>
+    <p class="meta-line">These services appear in current uploads or the IPD mirror but are not in <code>dictionary.json</code>. Assign a category for each before running reconciliation (otherwise they would be stored as Other).</p>
     <div class="table-scroll" style="max-height:320px;">
       <table id="newServicesTable">
         <thead>
@@ -100,7 +100,20 @@
   </div>
 
   <div class="card">
-    <h2>06 · System Log</h2>
+    <h2>06 · IPD Reconciliation</h2>
+    <p class="meta-line">Matches <code>ipd_mirror</code> rows (from step 01) against SoT-only <code>unmatched_records</code> left after OPD reconciliation. Run this <em>after</em> the OPD pipeline above.</p>
+    <div class="actions">
+      <button id="ipdReconBtn">Run IPD Reconciliation</button>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-bar"><div class="progress-fill" id="ipdProgressFill"></div></div>
+      <div class="progress-label" id="ipdProgressLabel">Idle — no IPD reconciliation in progress.</div>
+    </div>
+    <div class="status-banner" id="ipdStatusBanner"></div>
+  </div>
+
+  <div class="card">
+    <h2>07 · System Log</h2>
     <div class="log-window" id="logWindow">Waiting for a run…</div>
   </div>
 </main>
@@ -137,7 +150,12 @@ wireDropzone('abrZone', 'abrInput', 'abrList', 'abronal');
 const STEP_PROGRESS = {
   'primary_reconciliation': 15,
   'secondary_name_matcher': 55,
-  'category_merger': 80,
+  'category_merger': 90,
+};
+
+const IPD_STEP_PROGRESS = {
+  'ipd_reconciliation': 50,
+  'category_merger': 85,
 };
 
 function wsUrl(path) {
@@ -189,7 +207,7 @@ function applyScrapeLines(lines, { live } = { live: false }) {
       scrapeFill.style.width = success ? '100%' : scrapeFill.style.width;
       scrapeLabel.textContent = success ? 'Fetch complete.' : 'Fetch failed — see log.';
       scrapeBanner.textContent = success
-        ? `Abronal export fetched successfully. Files are now in the Abronal upload list below.`
+        ? `Abronal fetch complete — OPD files are in the upload list; IPD rows mirrored to ipd_mirror.`
         : `Fetch failed. Check the log window above for details.`;
       scrapeBanner.className = 'status-banner show ' + (success ? 'success' : 'fail');
       scrapeBtn.disabled = false;
@@ -231,7 +249,7 @@ function watchScrape(batchId, { replayed } = { replayed: false }) {
       scrapeFill.style.width = success ? '100%' : scrapeFill.style.width;
       scrapeLabel.textContent = success ? 'Fetch complete.' : 'Fetch failed — see log.';
       scrapeBanner.textContent = success
-        ? `Abronal export fetched successfully. Files are now in the Abronal upload list below.`
+        ? `Abronal fetch complete — OPD files are in the upload list; IPD rows mirrored to ipd_mirror.`
         : `Fetch failed. Check the log window above for details.`;
       scrapeBanner.className = 'status-banner show ' + (success ? 'success' : 'fail');
       scrapeBtn.disabled = false;
@@ -376,6 +394,111 @@ document.getElementById('runBtn').addEventListener('click', async () => {
   watchPipeline(data.batch_id, { replayed: !!data.resumed });
 });
 
+function applyIpdReconLines(lines) {
+  const logWindow = document.getElementById('logWindow');
+  const fill = document.getElementById('ipdProgressFill');
+  const label = document.getElementById('ipdProgressLabel');
+  const banner = document.getElementById('ipdStatusBanner');
+  const btn = document.getElementById('ipdReconBtn');
+  logWindow.textContent = '';
+  for (const line of lines) {
+    if (line.startsWith('IPD_RECON_DONE::')) {
+      const success = line.endsWith('success');
+      fill.style.width = success ? '100%' : fill.style.width;
+      label.textContent = success ? 'IPD reconciliation complete.' : 'IPD reconciliation failed — see log.';
+      banner.textContent = success
+        ? 'IPD reconciliation complete. Review results on the Evaluation page.'
+        : 'IPD reconciliation failed. Check the system log below.';
+      banner.className = 'status-banner show ' + (success ? 'success' : 'fail');
+      btn.disabled = false;
+      continue;
+    }
+    logWindow.textContent += line + '\n';
+    for (const [step, pct] of Object.entries(IPD_STEP_PROGRESS)) {
+      if (line.includes(step) || line.toLowerCase().includes(step.replace(/_/g, ' '))) {
+        fill.style.width = pct + '%';
+        label.textContent = line;
+      }
+    }
+    if (line.startsWith('Starting IPD')) {
+      fill.style.width = '10%';
+      label.textContent = line;
+    }
+  }
+  logWindow.scrollTop = logWindow.scrollHeight;
+}
+
+function watchIpdReconcile(batchId, { replayed } = { replayed: false }) {
+  const btn = document.getElementById('ipdReconBtn');
+  const logWindow = document.getElementById('logWindow');
+  const fill = document.getElementById('ipdProgressFill');
+  const label = document.getElementById('ipdProgressLabel');
+  const banner = document.getElementById('ipdStatusBanner');
+  btn.disabled = true;
+  if (!replayed) {
+    logWindow.textContent = '';
+    banner.className = 'status-banner';
+    fill.style.width = '5%';
+    label.textContent = 'Starting IPD reconciliation…';
+  }
+  const ws = new WebSocket(wsUrl(`/api/pipeline/ipd-reconcile/ws/${batchId}`));
+  let sawDone = false;
+  ws.onmessage = (evt) => {
+    const line = evt.data;
+    if (line.startsWith('IPD_RECON_DONE::')) {
+      sawDone = true;
+      const success = line.endsWith('success');
+      fill.style.width = success ? '100%' : fill.style.width;
+      label.textContent = success ? 'IPD reconciliation complete.' : 'IPD reconciliation failed — see log.';
+      banner.textContent = success
+        ? 'IPD reconciliation complete. Review results on the Evaluation page.'
+        : 'IPD reconciliation failed. Check the system log below.';
+      banner.className = 'status-banner show ' + (success ? 'success' : 'fail');
+      btn.disabled = false;
+      ws.close();
+      return;
+    }
+    logWindow.textContent += line + '\n';
+    logWindow.scrollTop = logWindow.scrollHeight;
+    for (const [step, pct] of Object.entries(IPD_STEP_PROGRESS)) {
+      if (line.includes(step) || line.toLowerCase().includes(step.replace(/_/g, ' '))) {
+        fill.style.width = pct + '%';
+        label.textContent = line;
+      }
+    }
+    if (line.startsWith('Starting IPD')) {
+      fill.style.width = '10%';
+      label.textContent = line;
+    }
+  };
+  ws.onerror = () => {
+    if (!sawDone) {
+      label.textContent = 'Connection lost — reopen Intake to resume log stream.';
+      btn.disabled = false;
+    }
+  };
+}
+
+document.getElementById('ipdReconBtn').addEventListener('click', async () => {
+  const banner = document.getElementById('ipdStatusBanner');
+  const res = await fetch(`${API}/pipeline/ipd-reconcile`, { method: 'POST' });
+  const data = await res.json();
+  if (res.status === 409) {
+    const detail = data.detail || {};
+    banner.className = 'status-banner show fail';
+    banner.textContent = detail.message || 'Categorize new services before running IPD reconciliation.';
+    await renderNewServices(detail);
+    document.getElementById('newServicesCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  if (!res.ok) {
+    banner.className = 'status-banner show fail';
+    banner.textContent = data.detail || 'Failed to start IPD reconciliation.';
+    return;
+  }
+  watchIpdReconcile(data.batch_id, { replayed: !!data.resumed });
+});
+
 async function refreshUploads() {
   const res = await fetch(`${API}/pipeline/uploads`);
   const data = await res.json();
@@ -435,14 +558,18 @@ async function renderNewServices(payload) {
     card.style.display = 'none';
     tbody.innerHTML = '';
     document.getElementById('runBtn').disabled = false;
+    const ipdBtn = document.getElementById('ipdReconBtn');
+    if (ipdBtn) ipdBtn.disabled = false;
     return;
   }
   card.style.display = '';
   document.getElementById('runBtn').disabled = true;
+  const ipdBtn = document.getElementById('ipdReconBtn');
+  if (ipdBtn) ipdBtn.disabled = true;
   const opts = categories.map(c => `<option value="${c}">${c}</option>`).join('');
   tbody.innerHTML = services.map((s, i) => {
     const name = typeof s === 'string' ? s : s.service;
-    const sources = (s.sources || []).join(', ') || '—';
+    const sources = (s.sources || []).map(x => x.toUpperCase()).join(', ') || '—';
     return `<tr>
       <td>${name}</td>
       <td style="color:var(--muted);font-size:12px;">${sources}</td>
@@ -531,6 +658,15 @@ async function restoreRuntime() {
         watchPipeline(pipe.batch_id, { replayed: false });
       } else {
         applyPipelineLines(pipe.lines || []);
+      }
+    }
+
+    const ipd = state.ipd_reconcile;
+    if (ipd && ipd.batch_id) {
+      if (ipd.status === 'running') {
+        watchIpdReconcile(ipd.batch_id, { replayed: false });
+      } else {
+        applyIpdReconLines(ipd.lines || []);
       }
     }
   } catch (e) {
