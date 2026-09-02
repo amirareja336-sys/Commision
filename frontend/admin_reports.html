@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — View Reports</title>
+<link rel="stylesheet" href="/static/style.css?v=7">
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <p class="meta-line" style="margin:-6px 0 18px;"><a href="/admin">← Admin</a></p>
+
+  <div class="card">
+    <h2>View Reports</h2>
+    <p class="meta-line">Snapshots sent from the user Report page. Filter by physician and date range the same way the sender did.</p>
+    <div class="filters-row">
+      <div class="field">
+        <label>Submission</label>
+        <select id="submissionSelect"></select>
+      </div>
+      <div class="field">
+        <label>Physician</label>
+        <div class="combo" id="physicianCombo">
+          <input class="combo-input" id="physicianInput" type="text" placeholder="All" autocomplete="off">
+          <span class="combo-arrow">▾</span>
+          <div class="combo-panel" id="physicianPanel"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label>Start Date</label>
+        <input type="date" id="startDate">
+      </div>
+      <div class="field">
+        <label>End Date</label>
+        <input type="date" id="endDate">
+      </div>
+      <div class="field">
+        <button id="applyBtn">Apply Filters</button>
+      </div>
+      <div class="field">
+        <button id="clearBtn" class="secondary">Clear</button>
+      </div>
+    </div>
+    <div class="meta-line" id="rowCount"></div>
+    <div class="table-scroll">
+      <table id="dataTable">
+        <thead><tr></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = "/api/admin";
+const DISPLAY_COLUMNS = [
+  "submitted_by_name", "submitted_at", "physician_name", "patient_name",
+  "service_id", "total_amount", "net_amount", "payment_date", "match_type",
+  "user_flagged_mismatch", "user_flag_reason", "submission_id",
+];
+
+let physicianSelected = "";
+let physicianValues = [];
+
+const comboRoot = document.getElementById("physicianCombo");
+const physicianInput = document.getElementById("physicianInput");
+const physicianPanel = document.getElementById("physicianPanel");
+const submissionSelect = document.getElementById("submissionSelect");
+const thead = document.querySelector("#dataTable thead tr");
+const tbody = document.querySelector("#dataTable tbody");
+
+function renderComboPanel(query) {
+  const q = (query || "").trim().toLowerCase();
+  const filtered = q ? physicianValues.filter(v => v.toLowerCase().includes(q)) : physicianValues;
+  const rows = [`<div class="combo-option all-option" data-value="">All</div>`];
+  if (filtered.length) {
+    rows.push(...filtered.slice(0, 200).map(v =>
+      `<div class="combo-option" data-value="${String(v).replace(/"/g, "&quot;")}">${v}</div>`));
+  } else {
+    rows.push(`<div class="combo-empty">No matches</div>`);
+  }
+  physicianPanel.innerHTML = rows.join("");
+  physicianPanel.querySelectorAll(".combo-option[data-value]").forEach(opt => {
+    opt.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      physicianSelected = opt.dataset.value;
+      physicianInput.value = physicianSelected;
+      comboRoot.classList.remove("open");
+      loadTable();
+    });
+  });
+}
+
+physicianInput.addEventListener("focus", () => comboRoot.classList.add("open"));
+physicianInput.addEventListener("input", () => {
+  physicianSelected = physicianInput.value;
+  renderComboPanel(physicianInput.value);
+  comboRoot.classList.add("open");
+});
+physicianInput.addEventListener("blur", () => {
+  setTimeout(() => comboRoot.classList.remove("open"), 150);
+});
+
+async function loadLookups() {
+  const [physRes, subRes] = await Promise.all([
+    fetch(`${API}/reports/physicians`),
+    fetch(`${API}/reports/submissions`),
+  ]);
+  const phys = await physRes.json();
+  const subs = await subRes.json();
+  physicianValues = (phys.values || []).map(String);
+  renderComboPanel("");
+
+  const submissions = subs.submissions || [];
+  submissionSelect.innerHTML = `<option value="">All submissions</option>` + submissions.map(s => {
+    const when = (s.submitted_at || "").slice(0, 19).replace("T", " ");
+    return `<option value="${s.submission_id}">${when} — ${s.submitted_by_name} (${s.row_count})</option>`;
+  }).join("");
+}
+
+function collectQuery() {
+  const params = new URLSearchParams();
+  const name = (physicianSelected || physicianInput.value || "").trim();
+  if (name) params.set("physician_name", name);
+  const start = document.getElementById("startDate").value;
+  const end = document.getElementById("endDate").value;
+  if (start) params.set("start_date", start);
+  if (end) params.set("end_date", end);
+  if (submissionSelect.value) params.set("submission_id", submissionSelect.value);
+  return params;
+}
+
+async function loadTable() {
+  const res = await fetch(`${API}/reports?${collectQuery().toString()}`);
+  const data = await res.json();
+  const rows = data.rows || [];
+  thead.innerHTML = DISPLAY_COLUMNS.map(c => `<th>${c}</th>`).join("");
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="${DISPLAY_COLUMNS.length}" style="color:var(--muted); font-style:italic;">No reports submitted yet.</td></tr>`;
+  } else {
+    tbody.innerHTML = rows.map(r => {
+      const flagged = r.user_flagged_mismatch === 1;
+      const cells = DISPLAY_COLUMNS.map(c => `<td>${r[c] ?? ""}</td>`).join("");
+      return `<tr class="${flagged ? "row-flagged" : ""}">${cells}</tr>`;
+    }).join("");
+  }
+  document.getElementById("rowCount").textContent = `${data.total ?? rows.length} report row(s)`;
+}
+
+document.getElementById("applyBtn").addEventListener("click", loadTable);
+submissionSelect.addEventListener("change", loadTable);
+document.getElementById("clearBtn").addEventListener("click", () => {
+  physicianSelected = "";
+  physicianInput.value = "";
+  document.getElementById("startDate").value = "";
+  document.getElementById("endDate").value = "";
+  submissionSelect.value = "";
+  loadTable();
+});
+
+(async function init() {
+  const res = await fetch("/api/auth/me");
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = "/login"; return; }
+  if (data.role !== "admin") { window.location.href = "/report"; return; }
+  const chip = document.getElementById("userChip");
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  });
+  await loadLookups();
+  await loadTable();
+})();
+</script>
+</body>
+</html>

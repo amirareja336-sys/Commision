@@ -1,0 +1,417 @@
+/* ────────────────────────────────────────────────────────────────
+   Reconciliation Console — visual identity
+   A quiet, post-modern-corporate register: soft neutral ground,
+   one recurring geometric accent (a quarter-circle, echoed as a
+   thin corner tab on every card), restrained color, generous space.
+
+   Deliberately self-contained: no external @import / CDN font
+   dependency. This app is meant to run on-prem/Docker, sometimes
+   without outbound internet access, and a blocked font request must
+   never be the reason buttons or cards look unstyled — system font
+   stacks approximate the same geometric-sans/humanist-sans/mono
+   character without needing network access.
+   ──────────────────────────────────────────────────────────────── */
+
+:root{
+  --bg:        #F6F5F2;
+  --surface:   #FFFFFF;
+  --ink:       #22262B;
+  --muted:     #6B7280;
+  --hairline:  #E6E4DE;
+  --accent:    #4A6FA5;
+  --accent-soft: #EAF0F6;
+  --accent-ink:  #2E4A6B;
+  --sage:      #4F7A63;
+  --sage-soft: #E9F1EC;
+  --clay:      #A5573E;
+  --clay-soft: #F5E9E5;
+  --radius-lg: 20px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(34,38,43,0.04), 0 10px 28px rgba(34,38,43,0.05);
+  --font-display: -apple-system, "Segoe UI Semibold", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, "Courier New", monospace;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--font-body);
+  font-size:14.5px;
+  line-height:1.5;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent);}
+
+/* ── Header: the one signature geometric accent ─────────────── */
+header.masthead{
+  position:relative;
+  padding:36px 44px 28px;
+  overflow:hidden;
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:16px;
+}
+header.masthead::before{
+  content:"";
+  position:absolute;
+  top:-120px; right:-90px;
+  width:280px; height:280px;
+  border-radius:50%;
+  background:radial-gradient(circle at 35% 35%, var(--accent-soft) 0%, transparent 70%);
+  pointer-events:none;
+  z-index:0;
+}
+header.masthead::after{
+  content:"";
+  position:absolute;
+  bottom:0; right:64px;
+  width:120px; height:60px;
+  border-top-left-radius:120px;
+  border-top-right-radius:120px;
+  background:var(--sage-soft);
+  opacity:0.6;
+  pointer-events:none;
+  z-index:0;
+}
+header.masthead .title{
+  position:relative;
+  z-index:1;
+  font-family:var(--font-display);
+  font-weight:600;
+  font-size:26px;
+  letter-spacing:-0.01em;
+}
+header.masthead .title small{
+  display:block;
+  font-family:var(--font-body);
+  font-weight:500;
+  font-size:12px;
+  letter-spacing:0.06em;
+  color:var(--muted);
+  text-transform:uppercase;
+  margin-top:6px;
+}
+nav.tabs{
+  position:relative;
+  display:flex;
+  gap:4px;
+  padding:4px;
+  background:var(--surface);
+  border-radius:999px;
+  box-shadow:var(--shadow);
+}
+nav.tabs a{
+  padding:9px 18px;
+  border-radius:999px;
+  color:var(--muted);
+  text-decoration:none;
+  font-size:13px;
+  font-weight:500;
+  transition:background .15s, color .15s;
+}
+nav.tabs a.active{
+  background:var(--accent);
+  color:#fff;
+}
+nav.tabs a:not(.active):hover{ background:var(--accent-soft); color:var(--accent-ink); }
+
+main{padding:8px 44px 60px; max-width:1400px; margin:0 auto;}
+
+/* ── Cards: the accent tab is the recurring signature ─────────── */
+.card{
+  position:relative;
+  background:var(--surface);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow);
+  padding:26px 28px;
+  margin-bottom:22px;
+}
+.card::before{
+  content:"";
+  position:absolute;
+  top:0; left:28px;
+  width:36px; height:4px;
+  border-radius:0 0 4px 4px;
+  background:var(--accent);
+  opacity:0.55;
+}
+.card h2{
+  margin:2px 0 16px;
+  font-family:var(--font-display);
+  font-weight:600;
+  font-size:15px;
+  letter-spacing:-0.01em;
+  color:var(--ink);
+}
+.grid-2{display:grid; grid-template-columns:1fr 1fr; gap:20px;}
+@media(max-width:900px){.grid-2{grid-template-columns:1fr;}}
+
+.meta-line{font-size:12.5px; color:var(--muted); margin-bottom:14px;}
+
+/* ── Dropzones ───────────────────────────────────────────────── */
+.dropzone{
+  border:1.5px dashed var(--hairline);
+  border-radius:var(--radius-md);
+  background:var(--bg);
+  padding:26px;
+  text-align:center;
+  font-size:13px;
+  color:var(--muted);
+  cursor:pointer;
+  transition:.15s;
+}
+.dropzone.drag{border-color:var(--accent); color:var(--accent-ink); background:var(--accent-soft);}
+.filelist{font-family:var(--font-mono); font-size:12px; margin-top:10px; color:var(--muted); max-height:160px; overflow:auto;}
+.filelist .file-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:4px 0;
+  border-bottom:1px solid var(--hairline);
+}
+.filelist .file-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.filelist .file-remove{
+  flex:none;
+  padding:4px 10px;
+  font-size:11px;
+}
+
+/* ── Buttons: pill, quiet ─────────────────────────────────────── */
+button{
+  font-family:var(--font-body);
+  font-size:13px;
+  font-weight:600;
+  letter-spacing:0.01em;
+  padding:10px 20px;
+  border:none;
+  border-radius:999px;
+  background:var(--accent);
+  color:#fff;
+  cursor:pointer;
+  transition:filter .15s, transform .05s;
+}
+button.secondary{background:var(--accent-soft); color:var(--accent-ink);}
+button.accent{background:var(--clay); color:#fff;}
+button:disabled{opacity:0.4; cursor:not-allowed;}
+button:hover:not(:disabled){filter:brightness(1.05);}
+button:active:not(:disabled){transform:scale(0.98);}
+button:focus-visible, input:focus-visible, select:focus-visible{
+  outline:2px solid var(--accent); outline-offset:2px;
+}
+
+.actions{display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;}
+
+/* ── Progress ─────────────────────────────────────────────────── */
+.progress-wrap{margin-top:18px;}
+.progress-bar{
+  height:8px;
+  border-radius:999px;
+  background:var(--bg);
+  overflow:hidden;
+}
+.progress-fill{
+  height:100%;
+  width:0%;
+  border-radius:999px;
+  background:linear-gradient(90deg, var(--accent), var(--sage));
+  transition:width .35s ease;
+}
+.progress-label{font-size:12px; margin-top:8px; color:var(--muted);}
+
+.log-window{
+  background:#1C2024;
+  color:#B9C4CC;
+  font-family:var(--font-mono);
+  font-size:12px;
+  line-height:1.6;
+  padding:16px 18px;
+  height:260px;
+  overflow-y:auto;
+  white-space:pre-wrap;
+  border-radius:var(--radius-md);
+}
+
+.status-banner{
+  margin-top:14px;
+  padding:12px 16px;
+  border-radius:var(--radius-sm);
+  font-size:12.5px;
+  font-weight:500;
+  display:none;
+}
+.status-banner.show{display:block;}
+.status-banner.success{background:var(--sage-soft); color:var(--sage);}
+.status-banner.fail{background:var(--clay-soft); color:var(--clay);}
+
+/* ── Form controls ────────────────────────────────────────────── */
+select, input[type=date], input[type=text]{
+  font-family:var(--font-body);
+  font-size:13px;
+  padding:9px 12px;
+  border:1px solid var(--hairline);
+  border-radius:var(--radius-sm);
+  background:var(--bg);
+  color:var(--ink);
+}
+select:focus, input:focus{ border-color:var(--accent); }
+
+.filters-row{display:flex; gap:12px; flex-wrap:wrap; align-items:end; margin-bottom:16px;}
+.filters-row .field{display:flex; flex-direction:column; gap:6px;}
+.filters-row label{font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted);}
+
+/* ── Combo filter: dropdown + search, one control ─────────────── */
+.combo{ position:relative; width:220px; }
+.combo-input{
+  width:100%;
+  padding:9px 34px 9px 12px;
+  border:1px solid var(--hairline);
+  border-radius:var(--radius-sm);
+  background:var(--bg);
+  font-family:var(--font-body);
+  font-size:13px;
+  color:var(--ink);
+}
+.combo-input:focus{ border-color:var(--accent); }
+.combo-arrow{
+  position:absolute;
+  right:10px; top:50%; transform:translateY(-50%);
+  width:16px; height:16px;
+  color:var(--muted);
+  pointer-events:none;
+  display:flex; align-items:center; justify-content:center;
+}
+.combo-panel{
+  position:absolute;
+  top:calc(100% + 6px); left:0; right:0;
+  background:var(--surface);
+  border-radius:var(--radius-sm);
+  box-shadow:var(--shadow);
+  max-height:220px;
+  overflow-y:auto;
+  z-index:20;
+  display:none;
+}
+.combo.open .combo-panel{ display:block; }
+.combo-option{
+  padding:9px 12px;
+  font-size:13px;
+  cursor:pointer;
+  color:var(--ink);
+}
+.combo-option:hover, .combo-option.highlight{ background:var(--accent-soft); color:var(--accent-ink); }
+.combo-option.all-option{ color:var(--muted); border-bottom:1px solid var(--hairline); }
+.combo-empty{ padding:9px 12px; font-size:12.5px; color:var(--muted); font-style:italic; }
+
+table{width:100%; border-collapse:collapse; font-family:var(--font-mono); font-size:12.5px;}
+thead th{
+  text-align:left;
+  padding:10px 14px;
+  background:var(--bg);
+  color:var(--muted);
+  font-weight:600;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  position:sticky; top:0;
+  white-space:nowrap;
+  border-bottom:1px solid var(--hairline);
+}
+tbody td{padding:9px 14px; border-bottom:1px solid var(--hairline); white-space:nowrap;}
+tbody tr:hover{ background:var(--accent-soft); }
+.table-scroll{max-height:520px; overflow:auto; border-radius:var(--radius-md); border:1px solid var(--hairline);}
+
+/* ── User chip (top-right identity + logout) ─────────────────── */
+.user-chip{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-size:12px;
+  color:var(--muted);
+}
+.user-chip b{ color:var(--ink); font-weight:600; }
+.user-chip .role-badge{
+  font-size:10px;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  padding:3px 8px;
+  border-radius:999px;
+  background:var(--accent-soft);
+  color:var(--accent-ink);
+}
+.user-chip button{ padding:6px 14px; font-size:11px; }
+.header-right{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; position:relative; z-index:1; }
+
+/* ── Admin hub cards ──────────────────────────────────────────── */
+.admin-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:18px; }
+.admin-tile{
+  display:block;
+  background:var(--surface);
+  border-radius:var(--radius-md);
+  box-shadow:var(--shadow);
+  padding:22px;
+  text-decoration:none;
+  color:var(--ink);
+  transition:transform .1s;
+}
+.admin-tile:hover{ transform:translateY(-2px); }
+.admin-tile .tile-title{ font-family:var(--font-display); font-weight:600; font-size:15px; margin-bottom:6px; }
+.admin-tile .tile-desc{ font-size:12.5px; color:var(--muted); }
+
+.inline-edit-row{ display:flex; align-items:center; gap:10px; }
+.inline-edit-row input, .inline-edit-row select{ width:120px; }
+
+/* ── Category-grouped admin table (Service Categories page) ────── */
+.category-group-row td{
+  padding:12px 14px 8px;
+  font-family:var(--font-display);
+  font-weight:600;
+  font-size:12px;
+  letter-spacing:0.03em;
+  text-transform:uppercase;
+  color:var(--accent-ink);
+  background:var(--accent-soft);
+  border-bottom:1px solid var(--hairline);
+}
+.category-group-row .group-count{
+  font-family:var(--font-body);
+  font-weight:400;
+  text-transform:none;
+  letter-spacing:0;
+  color:var(--muted);
+  margin-left:4px;
+}
+
+/* ── Flag button for matched records ──────────────────────────── */
+.flag-btn{
+  padding:4px 10px;
+  font-size:14px;
+  background:var(--bg);
+  border:1px solid var(--hairline);
+  border-radius:var(--radius-sm);
+  cursor:pointer;
+  transition:background .15s, border-color .15s;
+}
+.flag-btn:hover{
+  background:var(--clay-soft);
+  border-color:var(--clay);
+}
+.flag-btn.flagged{
+  background:var(--clay-soft);
+  border-color:var(--clay);
+  color:var(--clay);
+}
+.row-flagged{
+  background:var(--clay-soft) !important;
+}
+.row-flagged:hover{
+  background:#f0dcd6 !important;
+}

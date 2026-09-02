@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    image: reconciliation-console:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      # Optional — safe to leave this file empty (or copy .env.example
+      # and fill it in) if you're not using Abronal scraping.
+      # Everything else (upload-and-reconcile, Evaluation page, admin
+      # pages) works without it. Compose requires the file to exist,
+      # even empty: `touch .env` if you don't need it yet.
+      - .env
+    environment:
+      # Alternative to a mounted .encryption_key file: supply the
+      # Fernet key straight from the host/secrets manager instead.
+      # Leave unset to use the .encryption_key file volume below.
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+    volumes:
+      # Database, uploaded files, and generated exports all persist
+      # on the host across container restarts/rebuilds.
+      - ./db:/app/db
+      - ./data:/app/data
+      - ./exports:/app/exports
+      # Uncomment if you've run security/crypto.py --generate-key on
+      # the host and want the container to use that key file (leave
+      # commented out if you're supplying ENCRYPTION_KEY above
+      # instead, or not encrypting credentials at all — mounting a
+      # path that doesn't exist yet would create an empty directory
+      # there instead of a key file).
+      # - ./.encryption_key:/app/.encryption_key:ro
+    restart: unless-stopped

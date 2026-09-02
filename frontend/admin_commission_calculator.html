@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Commission Calculator</title>
+<link rel="stylesheet" href="/static/style.css?v=7">
+<style>
+  /* ── Summary stat cards ─────────────────────────────────────── */
+  .stat-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));
+    gap:14px;
+    margin-bottom:24px;
+  }
+  .stat-card{
+    background:var(--bg);
+    border-radius:var(--radius-md);
+    border:1px solid var(--hairline);
+    padding:16px 18px;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .stat-card .stat-label{
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:0.07em;
+    text-transform:uppercase;
+    color:var(--muted);
+  }
+  .stat-card .stat-value{
+    font-family:var(--font-display);
+    font-size:22px;
+    font-weight:700;
+    color:var(--ink);
+  }
+  .stat-card.highlight .stat-value{ color:var(--accent); }
+  .stat-card.green     .stat-value{ color:var(--sage); }
+
+  /* ── Category bar chart rows ─────────────────────────────────── */
+  .category-rows{ display:flex; flex-direction:column; gap:10px; }
+  .cat-row{
+    display:grid;
+    grid-template-columns:170px 1fr 110px 72px 110px;
+    align-items:center;
+    gap:12px;
+  }
+  .cat-row.cat-head{
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:0.07em;
+    text-transform:uppercase;
+    color:var(--muted);
+    padding-bottom:4px;
+  }
+  .cat-rate{
+    font-family:var(--font-mono);
+    font-size:12.5px;
+    text-align:right;
+    color:var(--muted);
+  }
+  .cat-commission{
+    font-family:var(--font-mono);
+    font-size:12.5px;
+    text-align:right;
+    font-weight:600;
+    color:var(--sage);
+  }
+  .cat-label{
+    font-size:12.5px;
+    font-weight:600;
+    color:var(--ink);
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .cat-bar-wrap{
+    height:10px;
+    background:var(--hairline);
+    border-radius:999px;
+    overflow:hidden;
+  }
+  .cat-bar{
+    height:100%;
+    border-radius:999px;
+    transition:width .35s ease;
+    min-width:2px;
+  }
+  .cat-amount{
+    font-family:var(--font-mono);
+    font-size:12.5px;
+    text-align:right;
+    color:var(--ink);
+  }
+
+  /* ── Batch table ─────────────────────────────────────────────── */
+  .batch-section{ margin-top:28px; }
+  .batch-section h3{
+    font-family:var(--font-display);
+    font-size:13px;
+    font-weight:600;
+    letter-spacing:-0.01em;
+    margin-bottom:12px;
+    color:var(--ink);
+  }
+
+  /* ── Empty / placeholder ─────────────────────────────────────── */
+  .placeholder{
+    padding:40px 24px;
+    text-align:center;
+    color:var(--muted);
+    font-size:13px;
+    font-style:italic;
+  }
+
+  /* ── Physician name headline ─────────────────────────────────── */
+  .physician-headline{
+    font-family:var(--font-display);
+    font-size:20px;
+    font-weight:700;
+    margin-bottom:4px;
+    color:var(--ink);
+  }
+  .physician-meta{
+    font-size:12px;
+    color:var(--muted);
+    margin-bottom:22px;
+  }
+
+  /* ── Print tweak ─────────────────────────────────────────────── */
+  @media print {
+    header.masthead, .filters-row, .actions, #noResult { display:none; }
+    .card { box-shadow:none; border:1px solid #ccc; }
+  }
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <p class="meta-line" style="margin:-6px 0 18px;"><a href="/admin">← Admin</a></p>
+
+  <!-- ── Query form ─────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Commission Calculator</h2>
+    <p class="meta-line">
+      Select a physician and an optional date range to compute their total commission,
+      broken down by service category and reconciliation batch.
+    </p>
+
+    <div class="filters-row">
+      <!-- Physician searchable combo -->
+      <div class="field">
+        <label for="physicianComboInput">Physician</label>
+        <div class="combo" id="physicianCombo">
+          <input
+            class="combo-input"
+            id="physicianComboInput"
+            type="text"
+            placeholder="Search physician…"
+            autocomplete="off"
+          >
+          <span class="combo-arrow">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <div class="combo-panel" id="physicianPanel"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="fromDate">From</label>
+        <input type="date" id="fromDate">
+      </div>
+
+      <div class="field">
+        <label for="toDate">To</label>
+        <input type="date" id="toDate">
+      </div>
+
+      <div class="field" style="justify-content:flex-end;">
+        <button id="calcBtn" disabled>Calculate</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Results ────────────────────────────────────────────────── -->
+  <div id="results" style="display:none;">
+    <div class="card" id="summaryCard">
+      <div class="physician-headline" id="physicianName"></div>
+      <div class="physician-meta"     id="periodLabel"></div>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <span class="stat-label">Patients</span>
+          <span class="stat-value" id="statPatients">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Records</span>
+          <span class="stat-value" id="statRecords">—</span>
+        </div>
+        <div class="stat-card highlight">
+          <span class="stat-label">Total Billed</span>
+          <span class="stat-value" id="statBilled">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Effective Rate</span>
+          <span class="stat-value" id="statRate">—</span>
+        </div>
+        <div class="stat-card green">
+          <span class="stat-label">Commission Total</span>
+          <span class="stat-value" id="statCommission">—</span>
+        </div>
+      </div>
+
+      <!-- Category bar breakdown -->
+      <div id="categoryRows" class="category-rows"></div>
+
+      <!-- Batch-by-batch breakdown -->
+      <div class="batch-section">
+        <h3>Reconciliation Batches</h3>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Batch ID</th>
+                <th>Period Start</th>
+                <th>Period End</th>
+                <th>Patients</th>
+                <th>Billed</th>
+                <th>Commission</th>
+              </tr>
+            </thead>
+            <tbody id="batchBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="actions" style="margin-top:24px;">
+        <button class="secondary" onclick="window.print()">🖨 Print / Save PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="noResult" style="display:none;" class="card">
+    <p class="placeholder" id="noResultMsg"></p>
+  </div>
+</main>
+
+<script>
+const API = "/api/admin";
+
+/* ── Utilities ──────────────────────────────────────────────────── */
+const fmt = (n) =>
+  new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+
+const fmtDate = (s) => {
+  if (!s) return "—";
+  const [y, m, d] = s.split("-");
+  return `${d}/${m}/${y}`;
+};
+
+/* ── Physician combo ────────────────────────────────────────────── */
+let allPhysicians      = [];
+let selectedPhysicianId   = null;
+
+const combo      = document.getElementById("physicianCombo");
+const comboInput = document.getElementById("physicianComboInput");
+const panel      = document.getElementById("physicianPanel");
+const calcBtn    = document.getElementById("calcBtn");
+
+async function loadPhysicians() {
+  try {
+    const res  = await fetch(`${API}/commission-calculator/physicians`);
+    const data = await res.json();
+    allPhysicians = data.physicians || [];
+  } catch {
+    allPhysicians = [];
+  }
+  renderPanel(allPhysicians);
+}
+
+function renderPanel(list) {
+  if (!list.length) {
+    panel.innerHTML = `<div class="combo-empty">No physicians yet — run reconciliation first.</div>`;
+    return;
+  }
+  panel.innerHTML = list
+    .map(
+      (p) =>
+        `<div class="combo-option" data-id="${p.physician_id}" data-name="${p.physician_name}">${p.physician_name}</div>`
+    )
+    .join("");
+  panel.querySelectorAll(".combo-option").forEach((opt) => {
+    opt.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      selectPhysician(opt.dataset.id, opt.dataset.name);
+    });
+  });
+}
+
+function selectPhysician(id, name) {
+  selectedPhysicianId   = id;
+  comboInput.value      = name;
+  combo.classList.remove("open");
+  calcBtn.disabled      = false;
+}
+
+comboInput.addEventListener("focus", () => {
+  combo.classList.add("open");
+  filterPanel(comboInput.value);
+});
+
+comboInput.addEventListener("input", () => {
+  selectedPhysicianId = null;
+  calcBtn.disabled    = true;
+  filterPanel(comboInput.value);
+  combo.classList.add("open");
+});
+
+comboInput.addEventListener("blur", () => {
+  setTimeout(() => combo.classList.remove("open"), 150);
+});
+
+function filterPanel(q) {
+  const lower    = q.toLowerCase().trim();
+  const filtered = lower
+    ? allPhysicians.filter((p) => p.physician_name.toLowerCase().includes(lower))
+    : allPhysicians;
+  renderPanel(filtered);
+}
+
+/* ── Calculate ──────────────────────────────────────────────────── */
+calcBtn.addEventListener("click", runCalculation);
+
+async function runCalculation() {
+  if (!selectedPhysicianId) return;
+
+  const from = document.getElementById("fromDate").value;
+  const to   = document.getElementById("toDate").value;
+
+  const params = new URLSearchParams({ physician_id: selectedPhysicianId });
+  if (from) params.set("from_date", from);
+  if (to)   params.set("to_date",   to);
+
+  calcBtn.disabled    = true;
+  calcBtn.textContent = "Calculating…";
+  document.getElementById("results").style.display  = "none";
+  document.getElementById("noResult").style.display = "none";
+
+  try {
+    const res = await fetch(`${API}/commission-calculator/calculate?${params}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showError(err.detail || "Calculation failed.");
+      return;
+    }
+    renderResults(await res.json());
+  } catch {
+    showError("Network error — please try again.");
+  } finally {
+    calcBtn.disabled    = false;
+    calcBtn.textContent = "Calculate";
+  }
+}
+
+/* ── Render results ─────────────────────────────────────────────── */
+const CAT_COLORS = [
+  "#4A6FA5", "#4F7A63", "#A5573E", "#7A5FAF", "#C49A2A", "#4A8DA5",
+];
+
+function renderResults(d) {
+  document.getElementById("physicianName").textContent =
+    d.physician.physician_name;
+
+  const from = d.date_range.from_date;
+  const to   = d.date_range.to_date;
+  document.getElementById("periodLabel").textContent =
+    from || to
+      ? `Period: ${from ? fmtDate(from) : "beginning"} → ${to ? fmtDate(to) : "today"}`
+      : "Period: all time";
+
+  document.getElementById("statPatients").textContent   = d.patient_count.toLocaleString();
+  document.getElementById("statRecords").textContent    = d.row_count.toLocaleString();
+  document.getElementById("statBilled").textContent     = fmt(d.total_billed);
+  const effective = d.total_billed
+    ? (d.commission_amount / d.total_billed) * 100
+    : 0;
+  document.getElementById("statRate").textContent       = `${fmt(effective)}%`;
+  document.getElementById("statCommission").textContent = fmt(d.commission_amount);
+
+  const cats = d.categories || {};
+  const billedVals = Object.values(cats).map((c) =>
+    Math.abs(typeof c === "number" ? c : (c.billed || 0))
+  );
+  const maxAmt = Math.max(...billedVals, 1);
+  const head = `
+    <div class="cat-row cat-head">
+      <span>Category</span>
+      <span></span>
+      <span class="cat-amount">Billed</span>
+      <span class="cat-rate">Rate</span>
+      <span class="cat-commission">Commission</span>
+    </div>`;
+  document.getElementById("categoryRows").innerHTML = head + Object.entries(cats)
+    .map(([name, info], i) => {
+      const billed = typeof info === "number" ? info : (info.billed || 0);
+      const rate = typeof info === "number" ? null : info.rate;
+      const commission = typeof info === "number" ? null : (info.commission || 0);
+      const pct = (Math.abs(billed) / maxAmt) * 100;
+      return `
+        <div class="cat-row">
+          <span class="cat-label" title="${name}">${name}</span>
+          <div class="cat-bar-wrap">
+            <div class="cat-bar" style="width:${pct.toFixed(1)}%; background:${CAT_COLORS[i % CAT_COLORS.length]};"></div>
+          </div>
+          <span class="cat-amount">${fmt(billed)}</span>
+          <span class="cat-rate">${rate == null ? "—" : `${fmt(rate)}%`}</span>
+          <span class="cat-commission">${commission == null ? "—" : fmt(commission)}</span>
+        </div>`;
+    })
+    .join("");
+
+  /* Batch table */
+  const batchBody = document.getElementById("batchBody");
+  if (!d.batches || !d.batches.length) {
+    batchBody.innerHTML = `<tr><td colspan="6" style="color:var(--muted);font-style:italic;text-align:center;padding:14px;">No batch data</td></tr>`;
+  } else {
+    batchBody.innerHTML = d.batches
+      .map(
+        (b) => `
+          <tr>
+            <td>${b.batch_id ?? "—"}</td>
+            <td>${fmtDate(b.period_start)}</td>
+            <td>${fmtDate(b.period_end)}</td>
+            <td>${(b.patients ?? 0).toLocaleString()}</td>
+            <td>${fmt(b.total_billed)}</td>
+            <td>${fmt(b.commission_amount)}</td>
+          </tr>`
+      )
+      .join("");
+  }
+
+  document.getElementById("results").style.display  = "block";
+  document.getElementById("noResult").style.display = "none";
+}
+
+function showError(msg) {
+  document.getElementById("results").style.display  = "none";
+  document.getElementById("noResult").style.display = "block";
+  document.getElementById("noResultMsg").textContent = msg;
+}
+
+/* ── Auth + init ────────────────────────────────────────────────── */
+(async function init() {
+  const res  = await fetch("/api/auth/me");
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = "/login"; return; }
+  if (data.role !== "admin") { window.location.href = "/report";     return; }
+
+  const chip = document.getElementById("userChip");
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  });
+
+  await loadPhysicians();
+})();
+</script>
+</body>
+</html>

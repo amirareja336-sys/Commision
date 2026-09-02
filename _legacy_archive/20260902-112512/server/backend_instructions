@@ -1,0 +1,23 @@
+Recommended stack:
+- Backend: FastAPI + SQLAlchemy + SQLite
+- Frontend: React + Vite
+- Database: SQLite for local development, PostgreSQL later for production
+
+Suggested structure:
+server/
+  app/
+    main.py
+    database.py
+    models.py
+    schemas.py
+    routes/
+      records.py
+Frontend/
+  src/
+    App.jsx
+    main.jsx
+    styles.css
+
+Run commands:
+- Backend: uvicorn server.app.main:app --reload --port 8000
+- Frontend: npm install && npm run dev

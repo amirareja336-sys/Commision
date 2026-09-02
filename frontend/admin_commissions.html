@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Commission Rates</title>
+<link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/">Intake &amp; Run</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <p class="meta-line" style="margin:-6px 0 18px;"><a href="/admin">← Admin</a></p>
+
+  <div class="card">
+    <h2>Commission Rates</h2>
+    <p class="meta-line">
+      Each physician has a separate commission percent per service category.
+      Pick a category to view and edit that slice of the table. The calculator
+      uses these rates immediately; re-run reconciliation to refresh stored
+      <code>commision_amount</code> on past batches.
+    </p>
+
+    <div class="filters-row">
+      <div class="field">
+        <label for="categoryComboInput">Service category</label>
+        <div class="combo" id="categoryCombo">
+          <input
+            class="combo-input"
+            id="categoryComboInput"
+            type="text"
+            placeholder="Select a category…"
+            autocomplete="off"
+          >
+          <span class="combo-arrow">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <div class="combo-panel" id="categoryPanel"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-scroll" style="max-height:none;">
+      <table id="ratesTable">
+        <thead>
+          <tr>
+            <th>Physician</th>
+            <th id="rateColHead">Commission %</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ratesBody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = "/api/admin";
+
+let allRates = [];
+let categories = [];
+let selectedCategory = null;
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+const combo = document.getElementById("categoryCombo");
+const comboInput = document.getElementById("categoryComboInput");
+const panel = document.getElementById("categoryPanel");
+
+function renderPanel(list) {
+  if (!list.length) {
+    panel.innerHTML = `<div class="combo-empty">No categories.</div>`;
+    return;
+  }
+  panel.innerHTML = list
+    .map(
+      (c) =>
+        `<div class="combo-option${c === selectedCategory ? " highlight" : ""}" data-name="${esc(c)}">${esc(c)}</div>`
+    )
+    .join("");
+  panel.querySelectorAll(".combo-option").forEach((opt) => {
+    opt.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      selectCategory(opt.dataset.name);
+    });
+  });
+}
+
+function filterPanel(q) {
+  const lower = q.toLowerCase().trim();
+  const filtered = lower
+    ? categories.filter((c) => c.toLowerCase().includes(lower))
+    : categories;
+  renderPanel(filtered);
+}
+
+function selectCategory(name) {
+  selectedCategory = name;
+  comboInput.value = name;
+  combo.classList.remove("open");
+  renderTable();
+}
+
+comboInput.addEventListener("focus", () => {
+  combo.classList.add("open");
+  filterPanel(comboInput.value);
+});
+comboInput.addEventListener("input", () => {
+  combo.classList.add("open");
+  filterPanel(comboInput.value);
+});
+comboInput.addEventListener("blur", () => {
+  setTimeout(() => {
+    combo.classList.remove("open");
+    if (selectedCategory) comboInput.value = selectedCategory;
+  }, 150);
+});
+
+function rateFor(row) {
+  const rates = row.rates || {};
+  const v = rates[selectedCategory];
+  return v == null || v === "" ? 0 : v;
+}
+
+function renderTable() {
+  const tbody = document.getElementById("ratesBody");
+  const head = document.getElementById("rateColHead");
+  if (!selectedCategory) {
+    head.textContent = "Commission %";
+    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--muted); font-style:italic;">Select a service category to view rates.</td></tr>`;
+    return;
+  }
+  head.textContent = `${selectedCategory} %`;
+
+  if (!allRates.length) {
+    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--muted); font-style:italic;">No physicians yet — run reconciliation at least once first.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = allRates.map((r) => `
+    <tr>
+      <td>${esc(r.physician_name)}</td>
+      <td>
+        <div class="inline-edit-row">
+          <input type="number" min="0" max="100" step="0.1" value="${rateFor(r)}"
+                 data-physician-id="${r.physician_id}" class="rate-input">
+          <span style="color:var(--muted); font-size:12px;">%</span>
+        </div>
+      </td>
+      <td><button class="save-btn" data-physician-id="${r.physician_id}" style="padding:6px 14px; font-size:11px;">Save</button></td>
+    </tr>
+  `).join("");
+
+  tbody.querySelectorAll(".save-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const pid = btn.dataset.physicianId;
+      const input = tbody.querySelector(`.rate-input[data-physician-id="${pid}"]`);
+      const value = parseFloat(input.value);
+      if (Number.isNaN(value)) {
+        alert("Enter a numeric commission percent.");
+        return;
+      }
+      const res = await fetch(`${API}/commission-rates/${pid}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commission_percent: value,
+          category: selectedCategory,
+        }),
+      });
+      if (res.ok) {
+        const row = allRates.find((x) => String(x.physician_id) === String(pid));
+        if (row) {
+          row.rates = row.rates || {};
+          row.rates[selectedCategory] = value;
+        }
+        btn.textContent = "Saved ✓";
+        setTimeout(() => { btn.textContent = "Save"; }, 1200);
+      } else {
+        const d = await res.json().catch(() => ({}));
+        alert(d.detail || "Failed to save.");
+      }
+    });
+  });
+}
+
+async function loadRates() {
+  const res = await fetch(`${API}/commission-rates`);
+  const data = await res.json();
+  allRates = data.rates || [];
+  categories = data.categories || [];
+  if (categories.length && !selectedCategory) {
+    selectCategory(categories[0]);
+  } else {
+    renderPanel(categories);
+    renderTable();
+  }
+}
+
+(async function init() {
+  const res = await fetch("/api/auth/me");
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = "/login"; return; }
+  if (data.role !== "admin") { window.location.href = "/report"; return; }
+  const chip = document.getElementById("userChip");
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  });
+  loadRates();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Report</title>
+<link rel="stylesheet" href="/static/style.css?v=7">
+</head>
+<body>
+<header class="masthead">
+  <div class="title">Reconciliation Console<small>Abronal ⇄ Source-of-Truth</small></div>
+  <div class="header-right">
+    <nav class="tabs">
+      <a href="/report" class="active">Report</a>
+    </nav>
+    <div class="user-chip" id="userChip"></div>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Accountant Report</h2>
+    <p class="meta-line">Condensed matched records for review. Filter by physician and date range, flag mismatches, then send the current view to admin.</p>
+    <div class="filters-row">
+      <div class="field">
+        <label>Physician</label>
+        <div class="combo" id="physicianCombo">
+          <input class="combo-input" id="physicianInput" type="text" placeholder="All" autocomplete="off">
+          <span class="combo-arrow">▾</span>
+          <div class="combo-panel" id="physicianPanel"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label>Start Date</label>
+        <input type="date" id="startDate">
+      </div>
+      <div class="field">
+        <label>End Date</label>
+        <input type="date" id="endDate">
+      </div>
+      <div class="field">
+        <button id="applyBtn">Apply Filters</button>
+      </div>
+      <div class="field">
+        <button id="clearBtn" class="secondary">Clear</button>
+      </div>
+    </div>
+    <div class="meta-line" id="rowCount"></div>
+    <div class="table-scroll">
+      <table id="dataTable">
+        <thead><tr></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button id="sendBtn">Send Report</button>
+    </div>
+    <div class="status-banner" id="statusBanner"></div>
+  </div>
+</main>
+
+<script>
+const API = "/api/reports";
+const DISPLAY_COLUMNS = [
+  "match_id", "physician_name", "patient_name", "service_id",
+  "total_amount", "net_amount", "payment_date", "match_type",
+  "confidence", "user_flagged_mismatch", "user_flag_reason",
+];
+
+let physicianSelected = "";
+let physicianValues = [];
+let currentRows = [];
+
+const comboRoot = document.getElementById("physicianCombo");
+const physicianInput = document.getElementById("physicianInput");
+const physicianPanel = document.getElementById("physicianPanel");
+const thead = document.querySelector("#dataTable thead tr");
+const tbody = document.querySelector("#dataTable tbody");
+const banner = document.getElementById("statusBanner");
+
+function showBanner(kind, text) {
+  banner.className = "status-banner show " + kind;
+  banner.textContent = text;
+}
+
+function renderComboPanel(query) {
+  const q = (query || "").trim().toLowerCase();
+  const filtered = q ? physicianValues.filter(v => v.toLowerCase().includes(q)) : physicianValues;
+  const rows = [`<div class="combo-option all-option" data-value="">All</div>`];
+  if (filtered.length) {
+    rows.push(...filtered.slice(0, 200).map(v =>
+      `<div class="combo-option" data-value="${String(v).replace(/"/g, "&quot;")}">${v}</div>`));
+  } else {
+    rows.push(`<div class="combo-empty">No matches</div>`);
+  }
+  physicianPanel.innerHTML = rows.join("");
+  physicianPanel.querySelectorAll(".combo-option[data-value]").forEach(opt => {
+    opt.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      physicianSelected = opt.dataset.value;
+      physicianInput.value = physicianSelected;
+      comboRoot.classList.remove("open");
+      loadTable();
+    });
+  });
+}
+
+async function loadPhysicians() {
+  const res = await fetch(`${API}/physicians`);
+  const data = await res.json();
+  physicianValues = (data.values || []).map(String);
+  renderComboPanel("");
+}
+
+physicianInput.addEventListener("focus", () => comboRoot.classList.add("open"));
+physicianInput.addEventListener("input", () => {
+  physicianSelected = physicianInput.value;
+  renderComboPanel(physicianInput.value);
+  comboRoot.classList.add("open");
+});
+physicianInput.addEventListener("blur", () => {
+  setTimeout(() => comboRoot.classList.remove("open"), 150);
+});
+
+function collectQuery() {
+  const params = new URLSearchParams();
+  const name = (physicianSelected || physicianInput.value || "").trim();
+  if (name) params.set("physician_name", name);
+  const start = document.getElementById("startDate").value;
+  const end = document.getElementById("endDate").value;
+  if (start) params.set("start_date", start);
+  if (end) params.set("end_date", end);
+  return params;
+}
+
+async function loadTable() {
+  saveReportUi();
+  const res = await fetch(`${API}/preview?${collectQuery().toString()}`);
+  const data = await res.json();
+  currentRows = data.rows || [];
+  thead.innerHTML = [...DISPLAY_COLUMNS.map(c => `<th>${c}</th>`), "<th>Flag</th>"].join("");
+  tbody.innerHTML = currentRows.map(r => {
+    const flagged = r.user_flagged_mismatch === 1;
+    const cells = DISPLAY_COLUMNS.map(c => `<td>${r[c] ?? ""}</td>`).join("");
+    const flagBtn = `<td><button class="flag-btn ${flagged ? "flagged" : ""}" data-id="${r.match_id}" title="${flagged ? "Unflag" : "Flag as mismatch"}">${flagged ? "🚩" : "⚑"}</button></td>`;
+    return `<tr class="${flagged ? "row-flagged" : ""}">${cells}${flagBtn}</tr>`;
+  }).join("");
+  document.getElementById("rowCount").textContent =
+    `${currentRows.length} condensed row(s) — ready to send`;
+
+  tbody.querySelectorAll(".flag-btn").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      const matchId = e.target.dataset.id;
+      const currentlyFlagged = e.target.classList.contains("flagged");
+      const reason = currentlyFlagged ? null : prompt("Reason for flagging (optional):");
+      if (!currentlyFlagged && reason === null) return;
+      try {
+        const flagRes = await fetch(`/api/tables/matched_records/${matchId}/flag`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ flagged: !currentlyFlagged, reason: reason || null }),
+        });
+        const flagData = await flagRes.json();
+        if (flagRes.ok) {
+          await loadTable();
+        } else {
+          showBanner("fail", flagData.detail || "Failed to flag record.");
+        }
+      } catch (err) {
+        showBanner("fail", "Error flagging record: " + err.message);
+      }
+    });
+  });
+}
+
+function saveReportUi() {
+  const state = {
+    physician: (physicianSelected || physicianInput.value || "").trim(),
+    startDate: document.getElementById("startDate").value,
+    endDate: document.getElementById("endDate").value,
+  };
+  fetch("/api/runtime/ui", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ page: "report", state }),
+  }).catch(() => {});
+}
+
+document.getElementById("applyBtn").addEventListener("click", loadTable);
+document.getElementById("clearBtn").addEventListener("click", () => {
+  physicianSelected = "";
+  physicianInput.value = "";
+  document.getElementById("startDate").value = "";
+  document.getElementById("endDate").value = "";
+  banner.className = "status-banner";
+  loadTable();
+});
+
+document.getElementById("sendBtn").addEventListener("click", async () => {
+  const name = (physicianSelected || physicianInput.value || "").trim();
+  const payload = {
+    physician_name: name || null,
+    start_date: document.getElementById("startDate").value || null,
+    end_date: document.getElementById("endDate").value || null,
+  };
+  const res = await fetch(`${API}/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    showBanner("success", `Sent ${data.row_count} row(s) to admin (submission ${data.submission_id}).`);
+  } else {
+    showBanner("fail", data.detail || "Failed to send report.");
+  }
+});
+
+["startDate", "endDate"].forEach(id => {
+  document.getElementById(id).addEventListener("change", saveReportUi);
+});
+
+(async function init() {
+  const res = await fetch("/api/auth/me");
+  const data = await res.json();
+  if (!data.authenticated) { window.location.href = "/login"; return; }
+  if (data.role === "admin") { window.location.href = "/admin/reports"; return; }
+  const chip = document.getElementById("userChip");
+  chip.innerHTML = `<span><b>${data.username}</b></span><span class="role-badge">${data.role}</span><button class="secondary" id="logoutBtn">Log Out</button>`;
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  });
+  try {
+    const uiRes = await fetch("/api/runtime/ui/report");
+    if (uiRes.ok) {
+      const saved = (await uiRes.json()).state || {};
+      if (saved.physician) {
+        physicianSelected = saved.physician;
+        physicianInput.value = saved.physician;
+      }
+      if (saved.startDate) document.getElementById("startDate").value = saved.startDate;
+      if (saved.endDate) document.getElementById("endDate").value = saved.endDate;
+    }
+  } catch (e) { /* fresh */ }
+  await loadPhysicians();
+  await loadTable();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reconciliation Console — Log In</title>
+<link rel="stylesheet" href="/static/style.css?v=7">
+</head>
+<body>
+<main style="max-width:420px; margin:0 auto; padding-top:14vh;">
+  <div style="text-align:center; margin-bottom:24px;">
+    <div style="font-family:var(--font-display); font-weight:600; font-size:24px;">Reconciliation Console</div>
+    <div style="font-size:12px; color:var(--muted); letter-spacing:0.06em; text-transform:uppercase; margin-top:6px;">Abronal ⇄ Source-of-Truth</div>
+  </div>
+  <div class="card">
+    <h2>Log In</h2>
+    <form id="loginForm">
+      <div class="field" style="margin-bottom:14px;">
+        <label>Username</label>
+        <input type="text" id="username" autocomplete="username" style="width:100%; margin-top:6px;" required>
+      </div>
+      <div class="field" style="margin-bottom:6px;">
+        <label>Password</label>
+        <input type="password" id="password" autocomplete="current-password" style="width:100%; margin-top:6px;" required>
+      </div>
+      <div class="status-banner fail" id="errorBanner" style="margin-bottom:6px;"></div>
+      <button type="submit" style="width:100%; margin-top:10px;">Log In</button>
+    </form>
+  </div>
+</main>
+
+<script>
+const form = document.getElementById('loginForm');
+const errorBanner = document.getElementById('errorBanner');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errorBanner.classList.remove('show');
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    window.location.href = data.role === 'user' ? '/report' : '/';
+  } else {
+    errorBanner.textContent = data.error || 'Login failed.';
+    errorBanner.classList.add('show');
+  }
+});
+</script>
+</body>
+</html>
